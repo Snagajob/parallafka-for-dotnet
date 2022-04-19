@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
@@ -10,6 +11,8 @@ namespace Parallafka.Tests.Helpers
     {
         private readonly FakeConsumer _myConsumer = new();
         private readonly long[] _partitionOffsets;
+
+        public string Name => throw new System.NotImplementedException();
 
         public FakeTestKafkaTopic(int numPartitions = 3)
         {
@@ -58,6 +61,8 @@ namespace Parallafka.Tests.Helpers
 
             public ITargetBlock<IKafkaMessage<string, string>> Messages => this._messages;
 
+            public IReadOnlyCollection<TopicPartition> Assignment => throw new System.NotImplementedException();
+
             public ValueTask DisposeAsync()
             {
                 return ValueTask.CompletedTask;
@@ -71,6 +76,20 @@ namespace Parallafka.Tests.Helpers
             public Task CommitAsync(IKafkaMessage<string, string> message)
             {
                 return Task.CompletedTask;
+            }
+
+            public Task AssignAsync(IEnumerable<TopicPartition> topicPartitions)
+            {
+                throw new System.NotImplementedException();
+            }
+
+            public Task UnassignAsync()
+            {
+                throw new System.NotImplementedException();
+            }
+
+            public void AddPartitionsRevokedHandler(Action<IReadOnlyCollection<TopicPartition>> onPartitionsRevoked)
+            {
             }
         }
     }

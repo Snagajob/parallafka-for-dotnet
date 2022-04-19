@@ -56,6 +56,7 @@ namespace Parallafka
                 Parallafka<TKey, TValue>.WriteLine($"GetAndCommitAnyMessages start call#{loop}");
                 foreach (var message in this._commitState.GetMessagesToCommit())
                 {
+                    //await Task.Delay(1000); TODO
                     await CommitMessage(message, cancellationToken);
                 }
 
@@ -85,6 +86,7 @@ namespace Parallafka
                 }
                 catch (Exception e)
                 {
+                    Parallafka<TKey, TValue>.WriteLine($"COMMIT ERROR: " + e.Message + e.StackTrace);
                     Interlocked.Increment(ref this._messagesCommitErrors);
                     this._logger.LogError(e, "Error committing offsets");
                     await Task.Delay(99, cancellationToken);

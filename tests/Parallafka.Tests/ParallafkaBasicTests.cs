@@ -170,6 +170,8 @@ namespace Parallafka.Tests
 
             public List<IRecordOffset> Commits { get; } = new List<IRecordOffset>();
 
+            public IReadOnlyCollection<TopicPartition> Assignment => throw new NotImplementedException();
+
             public ValueTask DisposeAsync()
             {
                 this._enumerator.Dispose();
@@ -197,6 +199,20 @@ namespace Parallafka.Tests
                 }
 
                 return Task.CompletedTask;
+            }
+
+            public Task AssignAsync(IEnumerable<TopicPartition> topicPartitions)
+            {
+                throw new NotImplementedException();
+            }
+
+            public Task UnassignAsync()
+            {
+                throw new NotImplementedException();
+            }
+
+            public void AddPartitionsRevokedHandler(Action<IReadOnlyCollection<TopicPartition>> onPartitionsRevoked)
+            {
             }
         }
 

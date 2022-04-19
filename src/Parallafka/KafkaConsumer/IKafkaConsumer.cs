@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -18,5 +19,15 @@ namespace Parallafka.KafkaConsumer
         Task<IKafkaMessage<TKey, TValue>> PollAsync(CancellationToken cancellationToken);
 
         Task CommitAsync(IKafkaMessage<TKey, TValue> message);
+
+        void AddPartitionsRevokedHandler(Action<IReadOnlyCollection<TopicPartition>> onPartitionsRevoked);
+
+        IReadOnlyCollection<TopicPartition> Assignment { get; } // TODO: remove all the assignment stuff?
+
+        Task AssignAsync(IEnumerable<TopicPartition> topicPartitions);
+
+        Task UnassignAsync();
+
+
     }
 }

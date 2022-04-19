@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Parallafka.KafkaConsumer;
@@ -8,6 +10,8 @@ namespace Parallafka.Tests
     public class KafkaConsumerSpy<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     {
         public ConcurrentQueue<IRecordOffset> CommittedOffsets { get; } = new();
+
+        public IReadOnlyCollection<TopicPartition> Assignment => this._backingConsumer.Assignment;
 
         private readonly IKafkaConsumer<TKey, TValue> _backingConsumer;
 
@@ -30,6 +34,21 @@ namespace Parallafka.Tests
         public Task<IKafkaMessage<TKey, TValue>> PollAsync(CancellationToken cancellationToken)
         {
             return this._backingConsumer.PollAsync(cancellationToken);
+        }
+
+        public Task AssignAsync(IEnumerable<TopicPartition> topicPartitions)
+        {
+            return this._backingConsumer.AssignAsync(topicPartitions);
+        }
+
+        public Task UnassignAsync()
+        {
+            return this._backingConsumer.UnassignAsync();
+        }
+
+        public void AddPartitionsRevokedHandler(Action<IReadOnlyCollection<TopicPartition>> onPartitionsRevoked)
+        {
+            this._backingConsumer.AddPartitionsRevokedHandler(onPartitionsRevoked);
         }
     }
 }

@@ -6,6 +6,8 @@ namespace Parallafka.Tests
 {
     public interface ITestKafkaTopic // TODO: Make Disposable
     {
+        string Name { get; }
+
         Task InitializeAsync();
         
         Task DeleteAsync();

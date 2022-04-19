@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Confluent.Kafka;
@@ -27,6 +28,8 @@ namespace Parallafka.IntegrationTests
 
         private readonly SemaphoreSlim _creatorLock = new(1);
 
+        public string Name => this._topicName;
+
         public Task InitializeAsync()
         {
             return this.CreateTopicIfNotExistsAsync();
@@ -51,6 +54,8 @@ namespace Parallafka.IntegrationTests
         {
             await this.CreateTopicIfNotExistsAsync();
 
+            List<Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>>> partitionsRevokedHandlers = new();
+
             var consumerBuilder = new ConsumerBuilder<string, string>(
                 new ConsumerConfig(this._clientConfig)
                 {
@@ -58,11 +63,24 @@ namespace Parallafka.IntegrationTests
                     AutoOffsetReset = AutoOffsetReset.Earliest,
                     EnableAutoCommit = false,
                     // EnablePartitionEof = true,
+                }).SetPartitionsRevokedHandler((c, partitions) =>
+                {
+                    var ptns = partitions.Select(p => new KafkaConsumer.TopicPartition(p.Topic, p.Partition)).ToList();
+                    foreach (var handler in partitionsRevokedHandlers)
+                    {
+                        handler.Invoke(ptns);
+                    }
+                })
+                .SetPartitionsAssignedHandler((c, partitions) =>
+                {
+                    Parallafka<string, string>.WriteLine(c.Name + "ASSIGNING PARTITIONS !!! " + string.Join(", ", partitions.Select(p => p.Partition)));
                 });
             IConsumer<string, string> consumer = consumerBuilder.Build();
-            
+
             consumer.Subscribe(this._topicName);
-            var adapter = new ConfluentConsumerAdapter<string, string>(consumer, this._topicName);
+            var adapter = new ConfluentConsumerAdapter<string, string>(consumer, this._topicName,
+                AddPartitionsRevokedHandler: handler => partitionsRevokedHandlers.Add(handler));
+
             return new KafkaConsumerSpy<string, string>(adapter);
         }
 

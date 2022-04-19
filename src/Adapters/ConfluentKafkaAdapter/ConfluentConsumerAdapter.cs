@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Confluent.Kafka;
@@ -11,10 +14,22 @@ namespace Parallafka.Adapters.ConfluentKafka
 
         private readonly string _topic;
 
-        public ConfluentConsumerAdapter(IConsumer<TKey, TValue> consumer, string topic)
+        private Action<Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>>> _addPartitionsRevokedHandler;
+
+        /// <summary></summary>
+        /// <param name="consumer"></param>
+        /// <param name="topic"></param>
+        /// <param name="AddPartitionsRevokedHandler">
+        /// A function that registers the callback for when partitions are revoked (e.g. during a rebalance).
+        /// </param>
+        public ConfluentConsumerAdapter(
+            IConsumer<TKey, TValue> consumer,
+            string topic,
+            Action<Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>>> AddPartitionsRevokedHandler)
         {
             this._confluentConsumer = consumer;
             this._topic = topic;
+            this._addPartitionsRevokedHandler = AddPartitionsRevokedHandler;
         }
 
         public Task CommitAsync(IKafkaMessage<TKey, TValue> message)
@@ -60,6 +75,40 @@ namespace Parallafka.Adapters.ConfluentKafka
                 result.Message.Value,
                 new RecordOffset(result.Partition, result.Offset));
             return msg;
+        }
+
+        public IReadOnlyCollection<KafkaConsumer.TopicPartition> Assignment
+        {
+            get
+            {
+                return this._confluentConsumer.Assignment
+                    .Select(tp => new Parallafka.KafkaConsumer.TopicPartition(tp.Topic, tp.Partition))
+                    .ToArray();
+            }
+        }
+
+        public Task AssignAsync(IEnumerable<KafkaConsumer.TopicPartition> topicPartitions)
+        {
+            this._confluentConsumer.Subscribe(this._topic);
+            this._confluentConsumer.Assign(topicPartitions.Select(ToConfluentModel));
+            return Task.CompletedTask;
+        }
+
+        public Task UnassignAsync()
+        {
+            this._confluentConsumer.Unsubscribe();
+            return Task.CompletedTask;
+        }
+
+        private static Confluent.Kafka.TopicPartition ToConfluentModel(
+            Parallafka.KafkaConsumer.TopicPartition topicPartition)
+        {
+            return new(topicPartition.Topic, topicPartition.Partition);
+        }
+
+        public void AddPartitionsRevokedHandler(Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>> onPartitionsRevoked)
+        {
+            this._addPartitionsRevokedHandler(onPartitionsRevoked);
         }
     }
 }

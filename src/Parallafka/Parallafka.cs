@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
 using Parallafka.KafkaConsumer;
 using Microsoft.Extensions.Logging;
+using System.Linq;
 
 namespace Parallafka
 {
@@ -109,6 +110,14 @@ namespace Parallafka
                     BoundedCapacity = 1000
                 });
             handler.MessageHandled.LinkTo(messageHandledTarget);
+
+            this._consumer.AddPartitionsRevokedHandler(partitions =>
+            {
+                Parallafka<string, string>.WriteLine(this._consumer.ToString() + "REVOKING PARTITIONS !!! " + string.Join(", ", partitions.Select(p => p.Partition)));
+
+                // Flush the pipes of records with one of these partitions.
+                commitState.PurgeRecordsFromPartitions(partitions.Select(p => p.Partition));
+            });
 
             var state = "Polling for Kafka messages";
             this._getStats = () =>

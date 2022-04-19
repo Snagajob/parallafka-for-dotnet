@@ -139,6 +139,11 @@ namespace Parallafka
             Parallafka<TKey, TValue>.WriteLine($"CS:EnqueueMessage: {message.Key} {message.Offset}");
         }
 
+        public void PurgeRecordsFromPartitions(IEnumerable<int> partitions)
+        {
+            // TODO
+        }
+
         public object GetStats()
         {
             this._messagesNotYetCommittedByPartitionReaderWriterLock.EnterReadLock();
