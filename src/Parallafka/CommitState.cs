@@ -42,6 +42,9 @@ namespace Parallafka
 
         public event EventHandler OnMessageQueueFull;
 
+        public Dictionary<int, ConcurrentQueue<KafkaMessageWrapped<TKey, TValue>>>
+            MessagesNotYetCommittedByPartition => this._messagesNotYetCommittedByPartition;
+
         /// <summary>
         /// Returns an enumeration of messages that are ready to be committed to kafka.
         /// The commit queues are emptied as much as possible during this enumeration.

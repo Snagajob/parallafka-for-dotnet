@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -63,14 +64,16 @@ namespace Parallafka.Tests.Rebalance
                 return new()
                 {
                     MaxDegreeOfParallelism = 7,
-                    Logger = new MyLogger(this)
+                    Logger = new MyLogger(this),
+                    MaxQueuedMessages = 20
                 };
             }
 
-            Parallafka<string, string>.WriteLine = this.Console.WriteLine;
+            //Parallafka<string, string>.WriteLine = this.Console.WriteLine;
 
             bool hasConsumer1Rebalanced = false;
             bool isConsumer2Started = false;
+            IReadOnlyCollection<TopicPartition> partitionsRevokedFromConsumer1 = null;
 
             await using KafkaConsumerSpy<string, string> consumer1 = await this.Topic.GetConsumerAsync(consumerGroupId);
 
@@ -80,6 +83,7 @@ namespace Parallafka.Tests.Rebalance
                 {
                     Parallafka<string, string>.WriteLine("THE REBALANCE HAS OCCURRED");
                     hasConsumer1Rebalanced = true;
+                    partitionsRevokedFromConsumer1 = partitions;
                 }
             });
 
@@ -99,7 +103,7 @@ namespace Parallafka.Tests.Rebalance
             await Wait.UntilAsync("Consumer1 has consumed some",
                 async () =>
                 {
-                    Assert.True(consumer1MessagesConsumed.Count > 80);
+                    Assert.True(consumer1MessagesConsumed.Count > 400);
                 },
                 TimeSpan.FromSeconds(30));
 
@@ -114,17 +118,17 @@ namespace Parallafka.Tests.Rebalance
                 },
                 parallafka2Cancel.Token);
 
+            await Wait.UntilAsync("Rebalanced after Consumer2 joined",
+                async () =>
+                {
+                    Assert.True(hasConsumer1Rebalanced);
+                },
+                TimeSpan.FromSeconds(30));
+
             await Wait.UntilAsync("Consumer2 has consumed some",
                 async () =>
                 {
                     Assert.True(consumer2MessagesConsumed.Count > 80);
-                },
-                TimeSpan.FromSeconds(30));
-
-            await Wait.UntilAsync("Rebalanced for consumer2 join",
-                async () =>
-                {
-                    Assert.True(hasConsumer1Rebalanced);
                 },
                 TimeSpan.FromSeconds(30));
 
@@ -137,10 +141,25 @@ namespace Parallafka.Tests.Rebalance
                     Assert.True(messagesConsumedOverall.Count >= messagesPublished.Count);
                 },
                 TimeSpan.FromSeconds(45));
+
+            foreach (var message in consumer1MessagesConsumedAfterRebalance)
+            {
+                foreach (var revokedPartition in partitionsRevokedFromConsumer1)
+                {
+                    Assert.NotEqual(revokedPartition.Partition, message.Offset.Partition);
+                }
+            }
             
             verifier.AddConsumedMessages(messagesConsumedOverall);
             //verifier.AssertConsumedAllSentMessagesProperly();
             //verifier.AssertAllConsumedMessagesWereCommitted
+            // TODO: Add a mode that ignores duplicates so long as they are in order.
+        }
+
+        public override Task DisposeAsync()
+        {
+            Parallafka<string, string>.WriteLine = _ => {};
+            return base.DisposeAsync();
         }
 
         protected RebalanceTestBase(ITestOutputHelper console) : base(console)

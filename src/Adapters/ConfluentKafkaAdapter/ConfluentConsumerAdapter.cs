@@ -25,11 +25,11 @@ namespace Parallafka.Adapters.ConfluentKafka
         public ConfluentConsumerAdapter(
             IConsumer<TKey, TValue> consumer,
             string topic,
-            Action<Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>>> AddPartitionsRevokedHandler)
+            Action<Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>>> addPartitionsRevokedHandler)
         {
             this._confluentConsumer = consumer;
             this._topic = topic;
-            this._addPartitionsRevokedHandler = AddPartitionsRevokedHandler;
+            this._addPartitionsRevokedHandler = addPartitionsRevokedHandler;
         }
 
         public Task CommitAsync(IKafkaMessage<TKey, TValue> message)

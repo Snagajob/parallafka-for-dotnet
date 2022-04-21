@@ -79,7 +79,7 @@ namespace Parallafka.IntegrationTests
 
             consumer.Subscribe(this._topicName);
             var adapter = new ConfluentConsumerAdapter<string, string>(consumer, this._topicName,
-                AddPartitionsRevokedHandler: handler => partitionsRevokedHandlers.Add(handler));
+                addPartitionsRevokedHandler: handler => partitionsRevokedHandlers.Add(handler));
 
             return new KafkaConsumerSpy<string, string>(adapter);
         }
