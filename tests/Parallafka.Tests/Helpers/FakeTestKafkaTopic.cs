@@ -91,6 +91,10 @@ namespace Parallafka.Tests.Helpers
             public void AddPartitionsRevokedHandler(Action<IReadOnlyCollection<TopicPartition>> onPartitionsRevoked)
             {
             }
+
+            public void AddPartitionsAssignedHandler(Action<IReadOnlyCollection<TopicPartition>> onPartitionsAssigned)
+            {
+            }
         }
     }
 }

@@ -50,5 +50,10 @@ namespace Parallafka.Tests
         {
             this._backingConsumer.AddPartitionsRevokedHandler(onPartitionsRevoked);
         }
+
+        public void AddPartitionsAssignedHandler(Action<IReadOnlyCollection<TopicPartition>> onPartitionsAssigned)
+        {
+            this._backingConsumer.AddPartitionsAssignedHandler(onPartitionsAssigned);
+        }
     }
 }

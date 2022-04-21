@@ -66,9 +66,10 @@ namespace Parallafka
             BufferBlock<KafkaMessageWrapped<TKey, TValue>> polledMessages = new(
                 new DataflowBlockOptions()
                 {
-                    BoundedCapacity = 50
+                    BoundedCapacity = 1
                 });
             Task pollerThread = this.KafkaPollerThread(polledMessages, userStopToken);
+
 
             while (!userStopToken.IsCancellationRequested)
             {
@@ -97,17 +98,39 @@ namespace Parallafka
                 // Is this a difficult RC opportunity? Where do we put the unfinished messages in the pipeline
                 // WRT those in the source?
 
+                // And what about RCs with the partitions being revoked without noticing, like during a restart?
+                // Like what if they're added back.
+                // We could pause the poller or something and purge...
+
+                IReadOnlyCollection<TopicPartition> partitionsRevoked = null;
+
+                // TODO: don't double-register the revokedHandler.
+
                 Pipeline processor = new(
                     config: this._config,
                     consumer: this._consumer,
                     messageSource: messageSource,
-                    messageHandlerAsync: messageHandlerAsync,
+                    messageHandlerAsync: async m =>
+                    {
+                        if (partitionsRevoked != null)
+                        {
+                            if (partitionsRevoked.Any(p => p.Partition == m.Offset.Partition))
+                            {
+                                Parallafka<string, string>.WriteLine($"Attempting to process a message with revoked partition! {m.Offset.Partition}");
+                            }
+                        }
+                        await messageHandlerAsync(m);
+                    },
                     onPartitionsRevoked: (partitions, processor) =>
                     {
+                        partitionsRevoked = partitions;
                         Parallafka<string, string>.WriteLine(
-                            this._consumer.ToString() + "REVOKING PARTITIONS !!! " + string.Join(", ", partitions.Select(p => p.Partition)));
+                            this._consumer.ToString() + "REVOKING PARTITIONS yo !!! " + string.Join(", ", partitions.Select(p => p.Partition)));
 
                         pipelineStop.Cancel();
+
+                        Parallafka<string, string>.WriteLine("Waiting for processor to shut down");
+                        processor.Completion.Wait();
                     },
                     logger: this._logger);
 
@@ -126,6 +149,22 @@ namespace Parallafka
 
                 await messageSource.Completion;
                 Parallafka<string, string>.WriteLine("Pipeline has stopped due to rebalance. Will restart");
+                if (partitionsRevoked == null)
+                {
+                    throw new Exception("PartitionsRevoked should not be null");
+                }
+
+                int nReceived = 0;
+                while (polledMessages.TryReceive(message => partitionsRevoked.Any(pr => pr.Partition == message.Offset.Partition), out var message))
+                {
+                    Parallafka<string, string>.WriteLine("A revoked partition message was buffered. Removed it.");
+                    nReceived++;
+                }
+                if (nReceived > 1)
+                {
+                    throw new Exception($"Got {nReceived} instead of max expected of 1");
+                }
+
                 // Pipeline has stopped. Salvage the uncommitted messages and prepare the new message source.
                 // uncommittedMessages = uncommittedMessagesFromPriorPipeline.Items.Concat(processor.GetUncommittedMessages());
             }
@@ -150,6 +189,10 @@ namespace Parallafka
             private readonly CancellationToken _stopToken;
 
             private Func<object> _getStats;
+
+            private readonly TaskCompletionSource _tcs = new();
+
+            public Task Completion => this._tcs.Task;
 
             public Pipeline(
                 IParallafkaConfig config,
@@ -232,6 +275,11 @@ namespace Parallafka
                         BoundedCapacity = 1000
                     });
                 handler.MessageHandled.LinkTo(messageHandledTarget);
+
+                this._consumer.AddPartitionsRevokedHandler(partitions =>
+                {
+                    this._onPartitionsRevoked(partitions, this);
+                });
 
                 this._messageSource.Block.LinkTo(routingTarget);
 
@@ -338,7 +386,9 @@ namespace Parallafka
                 this._getStats = null;
 
                 // commitState should be empty
-                WriteLine("ConsumeFinished");
+                WriteLine("Pipeline finished");
+
+                this._tcs.TrySetResult();
             }
 
             public object GetStats()

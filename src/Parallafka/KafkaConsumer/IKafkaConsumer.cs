@@ -22,12 +22,12 @@ namespace Parallafka.KafkaConsumer
 
         void AddPartitionsRevokedHandler(Action<IReadOnlyCollection<TopicPartition>> onPartitionsRevoked);
 
+        void AddPartitionsAssignedHandler(Action<IReadOnlyCollection<TopicPartition>> onPartitionsAssigned);
+
         IReadOnlyCollection<TopicPartition> Assignment { get; } // TODO: remove all the assignment stuff?
 
         Task AssignAsync(IEnumerable<TopicPartition> topicPartitions);
 
         Task UnassignAsync();
-
-
     }
 }

@@ -55,6 +55,7 @@ namespace Parallafka.IntegrationTests
             await this.CreateTopicIfNotExistsAsync();
 
             List<Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>>> partitionsRevokedHandlers = new();
+            List<Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>>> partitionsAssignedHandlers = new();
 
             var consumerBuilder = new ConsumerBuilder<string, string>(
                 new ConsumerConfig(this._clientConfig)
@@ -73,13 +74,18 @@ namespace Parallafka.IntegrationTests
                 })
                 .SetPartitionsAssignedHandler((c, partitions) =>
                 {
-                    Parallafka<string, string>.WriteLine(c.Name + "ASSIGNING PARTITIONS !!! " + string.Join(", ", partitions.Select(p => p.Partition)));
+                    var ptns = partitions.Select(p => new KafkaConsumer.TopicPartition(p.Topic, p.Partition)).ToList();
+                    foreach (var handler in partitionsAssignedHandlers)
+                    {
+                        handler.Invoke(ptns);
+                    }
                 });
             IConsumer<string, string> consumer = consumerBuilder.Build();
 
             consumer.Subscribe(this._topicName);
             var adapter = new ConfluentConsumerAdapter<string, string>(consumer, this._topicName,
-                addPartitionsRevokedHandler: handler => partitionsRevokedHandlers.Add(handler));
+                addPartitionsRevokedHandler: partitionsRevokedHandlers.Add,
+                addPartitionsAssignedHandler: partitionsAssignedHandlers.Add);
 
             return new KafkaConsumerSpy<string, string>(adapter);
         }

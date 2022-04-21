@@ -69,23 +69,13 @@ namespace Parallafka.Tests.Rebalance
                 };
             }
 
-            //Parallafka<string, string>.WriteLine = this.Console.WriteLine;
+            Parallafka<string, string>.WriteLine = this.Console.WriteLine;
 
             bool hasConsumer1Rebalanced = false;
             bool isConsumer2Started = false;
             IReadOnlyCollection<TopicPartition> partitionsRevokedFromConsumer1 = null;
 
             await using KafkaConsumerSpy<string, string> consumer1 = await this.Topic.GetConsumerAsync(consumerGroupId);
-
-            consumer1.AddPartitionsRevokedHandler(partitions =>
-            {
-                if (isConsumer2Started)
-                {
-                    Parallafka<string, string>.WriteLine("THE REBALANCE HAS OCCURRED");
-                    hasConsumer1Rebalanced = true;
-                    partitionsRevokedFromConsumer1 = partitions;
-                }
-            });
 
             Parallafka<string, string> parallafka1 = new(consumer1, NewParallafkaConfig());
             CancellationTokenSource parallafka1Cancel = new();
@@ -99,6 +89,25 @@ namespace Parallafka.Tests.Rebalance
                     }
                 },
                 parallafka1Cancel.Token);
+
+            // Register this after the "real" handler registered by Parallafka
+            consumer1.AddPartitionsRevokedHandler(partitions =>
+            {
+                if (isConsumer2Started)
+                {
+                    Parallafka<string, string>.WriteLine("THE REBALANCE HAS STARTED");
+                    hasConsumer1Rebalanced = true;
+                    partitionsRevokedFromConsumer1 = partitions;
+                }
+            });
+
+            IReadOnlyCollection<TopicPartition> partitionsAssignedToConsumer1 = null;
+
+            consumer1.AddPartitionsAssignedHandler(partitions =>
+            {
+                Parallafka<string, string>.WriteLine(consumer1.ToString() + "ASSIGNING PARTITIONS !!! " + string.Join(", ", partitions.Select(p => p.Partition)));
+                partitionsAssignedToConsumer1 = partitions;
+            });
 
             await Wait.UntilAsync("Consumer1 has consumed some",
                 async () =>
@@ -142,12 +151,19 @@ namespace Parallafka.Tests.Rebalance
                 },
                 TimeSpan.FromSeconds(45));
 
+            // foreach (var message in consumer1MessagesConsumedAfterRebalance)
+            // {
+            //      // this is a problem. with current setting, it revokes ALL. So it'll fail either way.
+            //      // Instead, ensure the message partition is in the set of assigned partitions per consumer.
+            //     foreach (var revokedPartition in partitionsRevokedFromConsumer1)
+            //     {
+            //         Assert.NotEqual(revokedPartition.Partition, message.Offset.Partition);
+            //     }
+            // }
+
             foreach (var message in consumer1MessagesConsumedAfterRebalance)
             {
-                foreach (var revokedPartition in partitionsRevokedFromConsumer1)
-                {
-                    Assert.NotEqual(revokedPartition.Partition, message.Offset.Partition);
-                }
+                Assert.Contains(message.Offset.Partition, partitionsAssignedToConsumer1.Select(p => p.Partition));
             }
             
             verifier.AddConsumedMessages(messagesConsumedOverall);

@@ -14,7 +14,9 @@ namespace Parallafka.Adapters.ConfluentKafka
 
         private readonly string _topic;
 
-        private Action<Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>>> _addPartitionsRevokedHandler;
+        private readonly Action<Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>>> _addPartitionsRevokedHandler;
+
+        private readonly Action<Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>>> _addPartitionsAssignedHandler;
 
         /// <summary></summary>
         /// <param name="consumer"></param>
@@ -25,11 +27,14 @@ namespace Parallafka.Adapters.ConfluentKafka
         public ConfluentConsumerAdapter(
             IConsumer<TKey, TValue> consumer,
             string topic,
-            Action<Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>>> addPartitionsRevokedHandler)
+            Action<Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>>> addPartitionsRevokedHandler,
+            Action<Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>>> addPartitionsAssignedHandler)
         {
             this._confluentConsumer = consumer;
             this._topic = topic;
             this._addPartitionsRevokedHandler = addPartitionsRevokedHandler;
+            this._addPartitionsAssignedHandler = addPartitionsAssignedHandler;
+
         }
 
         public Task CommitAsync(IKafkaMessage<TKey, TValue> message)
@@ -109,6 +114,11 @@ namespace Parallafka.Adapters.ConfluentKafka
         public void AddPartitionsRevokedHandler(Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>> onPartitionsRevoked)
         {
             this._addPartitionsRevokedHandler(onPartitionsRevoked);
+        }
+
+        public void AddPartitionsAssignedHandler(Action<IReadOnlyCollection<KafkaConsumer.TopicPartition>> onPartitionsAssigned)
+        {
+            this._addPartitionsAssignedHandler(onPartitionsAssigned);
         }
     }
 }
