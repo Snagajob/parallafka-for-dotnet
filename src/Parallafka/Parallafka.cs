@@ -66,7 +66,7 @@ namespace Parallafka
             BufferBlock<KafkaMessageWrapped<TKey, TValue>> polledMessages = new(
                 new DataflowBlockOptions()
                 {
-                    BoundedCapacity = 1
+                    BoundedCapacity = 1 // how does it work when this is 1000. todo
                 });
             Task pollerThread = this.KafkaPollerThread(polledMessages, userStopToken);
 
@@ -102,7 +102,12 @@ namespace Parallafka
                 // Like what if they're added back.
                 // We could pause the poller or something and purge...
 
-                IReadOnlyCollection<TopicPartition> partitionsRevoked = null;
+                IReadOnlyCollection<TopicPartition> partitionsAssigned = null;
+
+                this._consumer.AddPartitionsAssignedHandler(partitions =>
+                {
+                    partitionsAssigned = partitions;
+                });
 
                 // TODO: don't double-register the revokedHandler.
 
@@ -112,20 +117,22 @@ namespace Parallafka
                     messageSource: messageSource,
                     messageHandlerAsync: async m =>
                     {
-                        if (partitionsRevoked != null)
+                        if (partitionsAssigned != null)
                         {
-                            if (partitionsRevoked.Any(p => p.Partition == m.Offset.Partition))
+                            if (!partitionsAssigned.Any(p => p.Partition == m.Offset.Partition))
                             {
                                 Parallafka<string, string>.WriteLine($"Attempting to process a message with revoked partition! {m.Offset.Partition}");
                             }
                         }
+                        await Task.Delay(50); // TODO move to test
                         await messageHandlerAsync(m);
                     },
                     onPartitionsRevoked: (partitions, processor) =>
                     {
-                        partitionsRevoked = partitions;
                         Parallafka<string, string>.WriteLine(
                             this._consumer.ToString() + "REVOKING PARTITIONS yo !!! " + string.Join(", ", partitions.Select(p => p.Partition)));
+
+                        Parallafka<string, string>.WriteLine("messages buffered from poller: " + polledMessages.Count);
 
                         pipelineStop.Cancel();
 
@@ -149,21 +156,21 @@ namespace Parallafka
 
                 await messageSource.Completion;
                 Parallafka<string, string>.WriteLine("Pipeline has stopped due to rebalance. Will restart");
-                if (partitionsRevoked == null)
-                {
-                    throw new Exception("PartitionsRevoked should not be null");
-                }
+                // if (partitionsRevoked == null)
+                // {
+                //     throw new Exception("PartitionsRevoked should not be null");
+                // }
 
-                int nReceived = 0;
-                while (polledMessages.TryReceive(message => partitionsRevoked.Any(pr => pr.Partition == message.Offset.Partition), out var message))
-                {
-                    Parallafka<string, string>.WriteLine("A revoked partition message was buffered. Removed it.");
-                    nReceived++;
-                }
-                if (nReceived > 1)
-                {
-                    throw new Exception($"Got {nReceived} instead of max expected of 1");
-                }
+                // int nReceived = 0;
+                // while (polledMessages.TryReceive(message => partitionsRevoked.Any(pr => pr.Partition == message.Offset.Partition), out var message))
+                // {
+                //     Parallafka<string, string>.WriteLine("A revoked partition message was buffered. Removed it.");
+                //     nReceived++;
+                // }
+                // if (nReceived > 1)
+                // {
+                //     throw new Exception($"Got {nReceived} instead of max expected of 1");
+                // }
 
                 // Pipeline has stopped. Salvage the uncommitted messages and prepare the new message source.
                 // uncommittedMessages = uncommittedMessagesFromPriorPipeline.Items.Concat(processor.GetUncommittedMessages());
