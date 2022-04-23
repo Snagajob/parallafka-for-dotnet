@@ -53,7 +53,7 @@ namespace Parallafka.Tests.Rebalance
 
         public virtual async Task TestRebalanceAsync()
         {
-            var publishTask = this.PublishTestMessagesAsync(1000);
+            var publishTask = this.PublishTestMessagesAsync(1000, duplicateKeys: true);
             ConcurrentQueue<IKafkaMessage<string, string>> messagesConsumedOverall = new();
             ConcurrentQueue<IKafkaMessage<string, string>> consumer1MessagesConsumed = new();
             ConcurrentQueue<IKafkaMessage<string, string>> consumer1MessagesConsumedAfterRebalance = new();
@@ -77,7 +77,12 @@ namespace Parallafka.Tests.Rebalance
 
             await using KafkaConsumerSpy<string, string> consumer1 = await this.Topic.GetConsumerAsync(consumerGroupId);
 
+            TimeSpan consumer1HandleDelay = TimeSpan.FromMilliseconds(50);
+
             Parallafka<string, string> parallafka1 = new(consumer1, NewParallafkaConfig());
+            parallafka1.OnMessageCommitted = async msg =>
+            {
+            };
             CancellationTokenSource parallafka1Cancel = new();
             Task consumeTask1 = parallafka1.ConsumeAsync(async msg =>
                 {
@@ -87,10 +92,11 @@ namespace Parallafka.Tests.Rebalance
                     {
                         consumer1MessagesConsumedAfterRebalance.Enqueue(msg);
                     }
+                    await Task.Delay(consumer1HandleDelay);
                 },
                 parallafka1Cancel.Token);
 
-            // Register this after the "real" handler registered by Parallafka
+            // Register this after the "real" handler registered by Parallafka.ConsumeAsync
             consumer1.AddPartitionsRevokedHandler(partitions =>
             {
                 if (isConsumer2Started)
@@ -114,11 +120,12 @@ namespace Parallafka.Tests.Rebalance
                 {
                     Assert.True(consumer1MessagesConsumed.Count > 40);
                 },
-                TimeSpan.FromSeconds(30));
+                timeout: TimeSpan.FromSeconds(30));
 
             await using KafkaConsumerSpy<string, string> consumer2 = await this.Topic.GetConsumerAsync(consumerGroupId);
             isConsumer2Started = true;
             Parallafka<string, string> parallafka2 = new(consumer2, NewParallafkaConfig());
+            parallafka2.OnMessageCommitted = parallafka1.OnMessageCommitted;
             CancellationTokenSource parallafka2Cancel = new();
             Task consumeTask2 = parallafka2.ConsumeAsync(async msg =>
                 {
@@ -132,35 +139,42 @@ namespace Parallafka.Tests.Rebalance
                 {
                     Assert.True(hasConsumer1Rebalanced);
                 },
-                TimeSpan.FromSeconds(30));
+                timeout: TimeSpan.FromSeconds(30));
 
             await Wait.UntilAsync("Consumer2 has consumed some",
                 async () =>
                 {
                     Assert.True(consumer2MessagesConsumed.Count > 80);
                 },
-                TimeSpan.FromSeconds(30));
+                timeout: TimeSpan.FromSeconds(30));
 
             var messagesPublished = await publishTask;
             ConsumptionVerifier verifier = new();
             verifier.AddSentMessages(messagesPublished);
-            // await Wait.UntilAsync("Consumed all messages",
-            //     async () =>
-            //     {
-            //         Assert.True(messagesConsumedOverall.Count >= messagesPublished.Count);
-            //     },
-            //     TimeSpan.FromSeconds(45));
+
+            consumer1HandleDelay = TimeSpan.Zero;
+            await Wait.UntilAsync("Consumed all messages",
+                async () =>
+                {
+                    Assert.True(messagesConsumedOverall.Count >= messagesPublished.Count);
+                },
+                timeout: TimeSpan.FromSeconds(45));
 
             foreach (var message in consumer1MessagesConsumedAfterRebalance)
             {
                 Assert.Contains(message.Offset.Partition, partitionsAssignedToConsumer1.Select(p => p.Partition));
             }
-            // how about committed???
-            
+
             verifier.AddConsumedMessages(messagesConsumedOverall);
-            //verifier.AssertConsumedAllSentMessagesProperly();
-            //verifier.AssertAllConsumedMessagesWereCommitted
-            // TODO: Add a mode that ignores duplicates so long as they are in order.
+            verifier.AssertConsumedAllSentMessagesProperly();
+
+            await Wait.UntilAsync("All messages were committed",
+                async () =>
+                {
+                    verifier.AssertAllConsumedMessagesWereCommitted(
+                        consumer1.CommittedOffsets.Concat(consumer2.CommittedOffsets));
+                },
+                timeout: TimeSpan.FromSeconds(30));
         }
 
         public override Task DisposeAsync()

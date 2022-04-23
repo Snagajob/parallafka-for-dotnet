@@ -47,10 +47,10 @@ namespace Parallafka.Tests.Performance
                 {
                     for (;;)
                     {
-                        using var token = new CancellationTokenSource(5000);
-                        message = await consumer.PollAsync(token.Token);
+                        using var stopper = new CancellationTokenSource(5000);
+                        message = await consumer.PollAsync(stopper.Token);
                         await consumeAsync(message);
-                        await consumer.CommitAsync(message);
+                        await consumer.CommitAsync(message, stopper.Token);
                     }
                 }
                 catch (OperationCanceledException)

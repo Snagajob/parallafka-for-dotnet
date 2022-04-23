@@ -18,7 +18,7 @@ namespace Parallafka.KafkaConsumer
         /// </summary>
         Task<IKafkaMessage<TKey, TValue>> PollAsync(CancellationToken cancellationToken);
 
-        Task CommitAsync(IKafkaMessage<TKey, TValue> message);
+        Task CommitAsync(IKafkaMessage<TKey, TValue> message, CancellationToken cancelToken);
 
         void AddPartitionsRevokedHandler(Action<IReadOnlyCollection<TopicPartition>> onPartitionsRevoked);
 

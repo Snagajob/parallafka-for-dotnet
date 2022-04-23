@@ -22,15 +22,19 @@ namespace Parallafka
         private long _messagesCommitErrors;
         private long _messagesCommitLoops;
 
+        private Func<KafkaMessageWrapped<TKey, TValue>, Task> _onCommitAsync;
+
         public MessageCommitter(
             IKafkaConsumer<TKey, TValue> consumer,
             IMessagesToCommit<TKey, TValue> commitState,
-            ILogger logger)
+            ILogger logger,
+            Func<KafkaMessageWrapped<TKey, TValue>, Task> onCommitAsync = null)
         {
             this._committerLock = new SemaphoreSlim(1, 1);
             this._consumer = consumer;
             this._commitState = commitState;
             this._logger = logger;
+            this._onCommitAsync = onCommitAsync;
         }
 
         public object GetStats()
@@ -56,7 +60,6 @@ namespace Parallafka
                 Parallafka<TKey, TValue>.WriteLine($"GetAndCommitAnyMessages start call#{loop}");
                 foreach (var message in this._commitState.GetMessagesToCommit())
                 {
-                    //await Task.Delay(1000); TODO
                     await CommitMessage(message, cancellationToken);
                 }
 
@@ -75,14 +78,15 @@ namespace Parallafka
                 try
                 {
                     Parallafka<TKey, TValue>.WriteLine($"MsgCommitter: committing {messageToCommit.Offset}");
-
                     cancellationToken.ThrowIfCancellationRequested();
-
-                    // TODO: inject CancelToken for hard-stop strategy?
-                    await this._consumer.CommitAsync(messageToCommit.Message);
-
+                    await this._consumer.CommitAsync(messageToCommit.Message, cancellationToken);
+                    await this._onCommitAsync?.Invoke(messageToCommit);
                     Interlocked.Increment(ref this._messagesCommitted);
                     break;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (Exception e)
                 {

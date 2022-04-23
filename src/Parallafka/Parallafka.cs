@@ -19,6 +19,13 @@ namespace Parallafka
 
         public static Action<string> WriteLine { get; set; } = (string s) => { };
 
+        /// <summary>
+        /// For testing. Must be set by the time ConsumeAsync is called.
+        /// </summary>
+        internal Func<KafkaMessageWrapped<TKey, TValue>, Task> OnMessageCommitted { get; set; }
+
+        private SemaphoreSlim _pollerLock = new(initialCount: 1);
+
         public Parallafka(
             IKafkaConsumer<TKey, TValue> consumer,
             IParallafkaConfig config)
@@ -66,10 +73,9 @@ namespace Parallafka
             BufferBlock<KafkaMessageWrapped<TKey, TValue>> polledMessages = new(
                 new DataflowBlockOptions()
                 {
-                    BoundedCapacity = 1 // how does it work when this is 1000. todo
+                    BoundedCapacity = 1
                 });
-            Task pollerThread = this.KafkaPollerThread(polledMessages, userStopToken);
-
+            Task pollerThread = this.KafkaPollerThread(routingTarget: polledMessages, stopToken: userStopToken);
 
             while (!userStopToken.IsCancellationRequested)
             {
@@ -97,6 +103,11 @@ namespace Parallafka
                 // we actually need to keep any 'salvaged' messages in the queue for next pipeline.
                 // Is this a difficult RC opportunity? Where do we put the unfinished messages in the pipeline
                 // WRT those in the source?
+                // Can the consumer freak out and reset?
+
+                // ***********
+                // Any issues with the offsets? What if it resets and poller resets - what does the ordered to-commit queue look like?
+                // ***********
 
                 // And what about RCs with the partitions being revoked without noticing, like during a restart?
                 // Like what if they're added back.
@@ -106,10 +117,26 @@ namespace Parallafka
 
                 this._consumer.AddPartitionsAssignedHandler(partitions =>
                 {
+                    if (partitions.Count == 0)
+                    {
+                        Parallafka<string, string>.WriteLine("PartitionsAssigned is empty");
+                        return;
+                    }
+                    Parallafka<string, string>.WriteLine($"Partitions assigned: " + string.Join(", ", partitions.Select(p => p.Partition)));
                     partitionsAssigned = partitions;
+                    // int nStaleRecordsRemoved = 0;
+                    // int nBufferedOriginally = polledMessages.Count;
+                    // while (polledMessages.TryReceive(m => !partitionsAssigned.Any(pa => m.Offset.Partition == pa.Partition), out var message))
+                    // {
+                    //     Parallafka<string, string>.WriteLine("A revoked partition message was buffered. Removed it.");
+                    //     nStaleRecordsRemoved++;
+                    // }
+                    // Parallafka<string, string>.WriteLine($"Removed {nStaleRecordsRemoved} stale records out of {nBufferedOriginally} buffered");
                 });
 
                 // TODO: don't double-register the revokedHandler.
+
+                var partitionsAssignedBeforeRebalance = partitionsAssigned;
 
                 Pipeline processor = new(
                     config: this._config,
@@ -124,21 +151,23 @@ namespace Parallafka
                                 Parallafka<string, string>.WriteLine($"Attempting to process a message with revoked partition! {m.Offset.Partition}");
                             }
                         }
-                        await Task.Delay(50); // TODO move to test
                         await messageHandlerAsync(m);
                     },
                     onPartitionsRevoked: (partitions, processor) =>
                     {
+                        partitionsAssignedBeforeRebalance = partitionsAssigned;
+
                         Parallafka<string, string>.WriteLine(
                             this._consumer.ToString() + "REVOKING PARTITIONS yo !!! " + string.Join(", ", partitions.Select(p => p.Partition)));
 
                         Parallafka<string, string>.WriteLine("messages buffered from poller: " + polledMessages.Count);
 
-                        pipelineStop.Cancel();
+                        processor.InitiateShutdown(delayToFinishUpBeforeHardStop: TimeSpan.FromSeconds(10));
 
                         Parallafka<string, string>.WriteLine("Waiting for processor to shut down");
                         processor.Completion.Wait();
                     },
+                    onMessageCommitted: this.OnMessageCommitted,
                     logger: this._logger);
 
                 this._getStats = () => new
@@ -156,6 +185,32 @@ namespace Parallafka
 
                 await messageSource.Completion;
                 Parallafka<string, string>.WriteLine("Pipeline has stopped due to rebalance. Will restart");
+
+                if (partitionsAssigned == null)
+                {
+                    throw new Exception("partitionsAssigned is null");
+                }
+
+                while (partitionsAssigned == partitionsAssignedBeforeRebalance)
+                {
+                    Parallafka<string, string>.WriteLine("Waiting for new assignment"); // and for purge
+                    await Task.Delay(50);
+                }
+                string oldPts = string.Join(", ", partitionsAssignedBeforeRebalance.Select(p => p.Partition));
+                string newPts = string.Join(", ", partitionsAssigned.Select(p => p.Partition));
+                Parallafka<string, string>.WriteLine($"Done waiting for new assignment. {oldPts} -> {newPts}");
+
+                // await this._pollerLock.WaitAsync();
+
+                // while (polledMessages.TryReceive(m => !partitionsAssigned.Any(pa => m.Offset.Partition == pa.Partition), out var message))
+                // {
+                //     Parallafka<string, string>.WriteLine("A revoked partition message was buffered. Removed it.");
+                // }
+                // this._pollerLock.Release();
+
+                // This should be done with the poller paused. ^
+                // Maybe it can be done in OnPartitionsAssigned since that's called via Poll().
+
                 // if (partitionsRevoked == null)
                 // {
                 //     throw new Exception("PartitionsRevoked should not be null");
@@ -191,15 +246,21 @@ namespace Parallafka
 
             private readonly Action<IReadOnlyCollection<TopicPartition>, Pipeline> _onPartitionsRevoked;
 
+            private readonly Func<KafkaMessageWrapped<TKey, TValue>, Task> _onMessageCommitted;
+
             private readonly ILogger _logger;
 
             private readonly CancellationToken _stopToken;
 
             private Func<object> _getStats;
 
-            private readonly TaskCompletionSource _tcs = new();
+            private readonly TaskCompletionSource _completionSource = new();
 
-            public Task Completion => this._tcs.Task;
+            private readonly CancellationTokenSource _stopTokenSource = new();
+
+            private TimeSpan? _delayToFinishUpBeforeHardStop = TimeSpan.FromSeconds(10);
+
+            public Task Completion => this._completionSource.Task;
 
             public Pipeline(
                 IParallafkaConfig config,
@@ -207,30 +268,47 @@ namespace Parallafka
                 ISource<KafkaMessageWrapped<TKey, TValue>> messageSource,
                 Func<IKafkaMessage<TKey, TValue>, Task> messageHandlerAsync,
                 Action<IReadOnlyCollection<TopicPartition>, Pipeline> onPartitionsRevoked,
+                Func<KafkaMessageWrapped<TKey, TValue>, Task> onMessageCommitted,
                 ILogger logger)
             {
                 this._config = config;
                 this._consumer = consumer;
-                this._messageSource = messageSource;
+                this._messageSource = messageSource; // TODO: Need to salvage what's in the "salvaged" part of this on restart.
                 this._messageHandlerAsync = messageHandlerAsync;
                 this._onPartitionsRevoked = onPartitionsRevoked;
+                this._onMessageCommitted = onMessageCommitted;
                 this._logger = logger;
+            }
+
+            public void InitiateShutdown(TimeSpan delayToFinishUpBeforeHardStop)
+            {
+                this._delayToFinishUpBeforeHardStop = delayToFinishUpBeforeHardStop;
+                this._stopTokenSource.Cancel();
             }
 
             public async Task ProcessAsync(CancellationToken stopToken)
             {
+                var userStopToken = stopToken;
+                userStopToken.Register(() => this._stopTokenSource.Cancel());
+                CancellationTokenSource hardStopper = new();
+                this._stopTokenSource.Token.Register(() =>
+                {
+                    // Turn off the message source first. Then, after the configured "finish up" delay, hard-stop the downstream pipeline.
+                    this._messageSource.Complete();
+                    hardStopper.CancelAfter(
+                        Convert.ToInt32(this._delayToFinishUpBeforeHardStop?.TotalMilliseconds ?? 0));
+                });
+
                 int maxQueuedMessages = this._config.MaxQueuedMessages;
-                using var localStop = new CancellationTokenSource();
-                var localStopToken = localStop.Token;
 
                 var commitState = new CommitState<TKey, TValue>(
                     maxQueuedMessages,
-                    localStopToken);
+                    hardStopper.Token);
 
-                var messagesByKey = new MessagesByKey<TKey, TValue>(stopToken);
+                var messagesByKey = new MessagesByKey<TKey, TValue>(hardStopper.Token);
 
                 // the message router ensures messages are handled by key in order
-                var router = new MessageRouter<TKey, TValue>(commitState, messagesByKey, stopToken);
+                var router = new MessageRouter<TKey, TValue>(commitState, messagesByKey, hardStopper.Token);
                 var routingTarget = new ActionBlock<KafkaMessageWrapped<TKey, TValue>>(router.RouteMessage,
                     new ExecutionDataflowBlockOptions
                     {
@@ -244,7 +322,7 @@ namespace Parallafka
                 var handler = new MessageHandler<TKey, TValue>(
                     this._messageHandlerAsync,
                     this._logger,
-                    localStopToken);
+                    hardStopper.Token);
                 var handlerTarget = new ActionBlock<KafkaMessageWrapped<TKey, TValue>>(handler.HandleMessage,
                     new ExecutionDataflowBlockOptions
                     {
@@ -256,7 +334,8 @@ namespace Parallafka
                 var committer = new MessageCommitter<TKey, TValue>(
                     this._consumer,
                     commitState, 
-                    this._logger);
+                    this._logger,
+                    this._onMessageCommitted);
 
                 var commitPoller = new CommitPoller(committer);
 
@@ -289,40 +368,6 @@ namespace Parallafka
                 });
 
                 this._messageSource.Block.LinkTo(routingTarget);
-
-                // this._consumer.AddPartitionsRevokedHandler(partitions =>
-                // {
-                //     Parallafka<string, string>.WriteLine(this._consumer.ToString() + "REVOKING PARTITIONS !!! " + string.Join(", ", partitions.Select(p => p.Partition)));
-
-                //     // Tell committer to flush, w/ timeout. Commit as much as possible before giving up partitions in rebalance.
-                //     // Might need to do that, get as far as possible, then shut everything down, then restart all the processors,
-                //     // and have the initial source of records be maybe what's in the CommitState, uncommitted, excluding revoked partitions.
-
-                //     // 1. Refactor to make clean restarts easy.
-                //     // 2. Refactor to make the initial source for the routingTarget entrypoint any uncommitted messages in queues, before polling again.
-                //     //      Maybe we should just set the uncommittedMessagesByPartition directly.
-                //     // 3. Have this handler trigger the restart.
-
-
-                //     // CancellationTokenSource cancelCommit = new(13000);
-                //     // try
-                //     // {
-                //     //     committer.CommitNow(cancelCommit.Token).Wait();
-                //     // }
-                //     // catch (OperationCanceledException)
-                //     // {
-                //     //     Parallafka<string, string>.WriteLine("Pre-restart commit timed out");
-                //     // }
-
-                //     Parallafka<string, string>.WriteLine("Stopping everything to reset");
-
-                //     // Flush the pipes of records with one of these partitions.
-                //     var revokedPartitions = partitions.Select(p => p.Partition).ToArray();
-                //     // commitState.PurgeRecordsFromPartitions(revokedPartitions);
-                //     // messagesByKey.PurgeRecordsFromPartitions(revokedPartitions);
-                //     // messagesByKey.PurgeRecordsFromPartitions(revokedPartitions);
-                //     // router.PurgeRecordsFromPartitions(revokedPartitions);
-                // });
 
                 var state = "Polling for Kafka messages";
                 this._getStats = () =>
@@ -395,7 +440,7 @@ namespace Parallafka
                 // commitState should be empty
                 WriteLine("Pipeline finished");
 
-                this._tcs.TrySetResult();
+                this._completionSource.TrySetResult();
             }
 
             public object GetStats()
@@ -431,6 +476,8 @@ namespace Parallafka
                             delay = null;
                         }
 
+                        await this._pollerLock.WaitAsync(stopToken);
+
                         IKafkaMessage<TKey, TValue> message = await this._consumer.PollAsync(stopToken);
                         if (message == null)
                         {
@@ -454,6 +501,10 @@ namespace Parallafka
                     {
                         this._logger.LogError(e, "Error in Kafka poller thread");
                         delay = 333;
+                    }
+                    finally
+                    {
+                        this._pollerLock.Release();
                     }
                 }
             }

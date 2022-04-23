@@ -13,6 +13,8 @@ namespace Parallafka.Tests.Helpers
 
         private readonly HashSet<string> _sentMessageUniqueIds = new();
 
+        private readonly HashSet<string> _consumedMessageUniqueIds = new();
+
         private readonly Dictionary<string, Queue<IKafkaMessage<string, string>>> _consumedMessagesByKey = new();
 
         private int _consumedMessageCount = 0;
@@ -25,7 +27,7 @@ namespace Parallafka.Tests.Helpers
 
         public void AddSentMessages(IEnumerable<IKafkaMessage<string, string>> messages)
         {
-            lock (_sentMessages)
+            lock (this._sentMessages)
             {
                 foreach (var message in messages)
                 {
@@ -58,6 +60,7 @@ namespace Parallafka.Tests.Helpers
                     }
 
                     queueForKey.Enqueue(msg);
+                    this._consumedMessageUniqueIds.Add(UniqueIdFor(msg));
                 }
             }
         }
@@ -69,7 +72,7 @@ namespace Parallafka.Tests.Helpers
 
         public void AssertConsumedAllSentMessagesProperly()
         {
-            Assert.Equal(this._sentMessages.Count, this._consumedMessageCount);
+            Assert.Equal(this._sentMessages.Count, this._consumedMessageUniqueIds.Count);
 
             foreach (var kvp in this._consumedMessagesByKey)
             {
@@ -79,16 +82,21 @@ namespace Parallafka.Tests.Helpers
                     Assert.Equal(kvp.Key, message.Key);
                     
                     long offset = message.Offset.Offset;
-                    Assert.True(offset > prevMsgOffset, $"{offset} not > previous message offset {prevMsgOffset}"); // TODO: HOW DID THIS FAIL in order guarantee test
+                    Assert.True(offset >= prevMsgOffset, $"{offset} not >= previous message offset {prevMsgOffset}"); // TODO: HOW DID THIS FAIL in order guarantee test
 
                     prevMsgOffset = offset;
 
-                    Assert.True(this._sentMessageUniqueIds.Contains(UniqueIdFor(message)), "Expecting to find message in list of send messages");
+                    Assert.True(this._sentMessageUniqueIds.Contains(UniqueIdFor(message)), "Expecting to find message in list of sent messages");
                 }
             }
         }
 
         public void AssertAllConsumedMessagesWereCommitted(KafkaConsumerSpy<string, string> consumer)
+        {
+            this.AssertAllConsumedMessagesWereCommitted(consumer.CommittedOffsets);
+        }
+
+        public void AssertAllConsumedMessagesWereCommitted(IEnumerable<IRecordOffset> offsetsCommitted)
         {
             var byPartition = this._consumedMessagesByKey.Values
                 .SelectMany(q => q)
@@ -98,7 +106,7 @@ namespace Parallafka.Tests.Helpers
             {
                 var maxOffset = partition.Max(g => g.Offset.Offset);
 
-                if (!consumer.CommittedOffsets.Any(offset =>
+                if (!offsetsCommitted.Any(offset =>
                     offset.Partition == partition.Key && offset.Offset >= maxOffset))
                 {
                     Assert.False(true, $"Expecting to find committed offset for P:{partition.Key} O:{maxOffset}");

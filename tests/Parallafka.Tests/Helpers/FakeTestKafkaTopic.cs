@@ -73,7 +73,7 @@ namespace Parallafka.Tests.Helpers
                 return this._messages.ReceiveAsync(cancellationToken);
             }
 
-            public Task CommitAsync(IKafkaMessage<string, string> message)
+            public Task CommitAsync(IKafkaMessage<string, string> message, CancellationToken cancelToken)
             {
                 return Task.CompletedTask;
             }

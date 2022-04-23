@@ -191,7 +191,7 @@ namespace Parallafka.Tests
                 return _enumerator.Current;
             }
 
-            public Task CommitAsync(IKafkaMessage<TKey, TValue> message)
+            public Task CommitAsync(IKafkaMessage<TKey, TValue> message, CancellationToken cancelToken)
             {
                 lock (this.Commits)
                 {

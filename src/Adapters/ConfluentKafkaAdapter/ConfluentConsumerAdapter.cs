@@ -37,18 +37,24 @@ namespace Parallafka.Adapters.ConfluentKafka
 
         }
 
-        public Task CommitAsync(IKafkaMessage<TKey, TValue> message)
+        public async Task CommitAsync(IKafkaMessage<TKey, TValue> message, CancellationToken cancelToken)
         {
-            // TODO: Does this not accept a CancellationToken? Roll our own?
-            this._confluentConsumer.Commit(new[]
+            TaskCompletionSource cancelSource = new();
+            cancelToken.Register(() => cancelSource.SetResult());
+
+            Task commitTask = Task.Run(() =>
             {
-                new TopicPartitionOffset(
-                    this._topic,
-                    message.Offset.Partition,
-                    message.Offset.Offset)
+                this._confluentConsumer.Commit(new[]
+                {
+                    new TopicPartitionOffset(
+                        this._topic,
+                        message.Offset.Partition,
+                        message.Offset.Offset)
+                });
             });
-            
-            return Task.CompletedTask;
+
+            await Task.WhenAny(commitTask, cancelSource.Task);
+            cancelToken.ThrowIfCancellationRequested();
         }
 
         public ValueTask DisposeAsync()
