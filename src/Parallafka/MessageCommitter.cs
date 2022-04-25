@@ -80,7 +80,10 @@ namespace Parallafka
                     Parallafka<TKey, TValue>.WriteLine($"MsgCommitter: committing {messageToCommit.Offset}");
                     cancellationToken.ThrowIfCancellationRequested();
                     await this._consumer.CommitAsync(messageToCommit.Message, cancellationToken);
-                    await this._onCommitAsync?.Invoke(messageToCommit);
+                    if (this._onCommitAsync != null)
+                    {
+                        await this._onCommitAsync.Invoke(messageToCommit);
+                    }
                     Interlocked.Increment(ref this._messagesCommitted);
                     break;
                 }

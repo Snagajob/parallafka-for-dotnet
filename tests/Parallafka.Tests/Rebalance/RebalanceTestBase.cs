@@ -65,7 +65,7 @@ namespace Parallafka.Tests.Rebalance
                 {
                     MaxDegreeOfParallelism = 7,
                     Logger = new MyLogger(this),
-                    MaxQueuedMessages = 20
+                    MaxQueuedMessages = 200 // fails when this is 800 - TODO
                 };
             }
 
@@ -77,13 +77,14 @@ namespace Parallafka.Tests.Rebalance
 
             await using KafkaConsumerSpy<string, string> consumer1 = await this.Topic.GetConsumerAsync(consumerGroupId);
 
-            TimeSpan consumer1HandleDelay = TimeSpan.FromMilliseconds(50);
-
             Parallafka<string, string> parallafka1 = new(consumer1, NewParallafkaConfig());
-            parallafka1.OnMessageCommitted = async msg =>
+            Func<KafkaMessageWrapped<string, string>, Task> consumer1OnMessageCommittedAsync = _ => Task.CompletedTask;
+            parallafka1.OnMessageCommitted = msg =>
             {
+                return consumer1OnMessageCommittedAsync.Invoke(msg);
             };
             CancellationTokenSource parallafka1Cancel = new();
+            TimeSpan consumer1HandleDelay = TimeSpan.FromMilliseconds(50);
             Task consumeTask1 = parallafka1.ConsumeAsync(async msg =>
                 {
                     messagesConsumedOverall.Enqueue(msg);
@@ -121,11 +122,60 @@ namespace Parallafka.Tests.Rebalance
                     Assert.True(consumer1MessagesConsumed.Count > 40);
                 },
                 timeout: TimeSpan.FromSeconds(30));
+            long lastConsumedMsgOffset = consumer1MessagesConsumed.Last().Offset.Offset;
+            await Wait.UntilAsync("Consumer1 has committed some",
+                async () =>
+                {
+                    Assert.True(consumer1.CommittedOffsets.Any(o => o.Offset >= lastConsumedMsgOffset));
+                },
+                timeout: TimeSpan.FromSeconds(15));
+
+            bool commitQueueFull = false;
+            parallafka1.OnCommitQueueFull = () => commitQueueFull = true;
+
+            // Hang the next commit
+            TaskCompletionSource consumer1CommitBlocker = new();
+            bool committerAppearsToBeHanging = false;
+            consumer1OnMessageCommittedAsync = msg =>
+            {
+                committerAppearsToBeHanging = true;
+                return consumer1CommitBlocker.Task;
+            };
+            await Wait.UntilAsync("Committer appears to be hanging as expected",
+                async () =>
+                {
+                    Assert.True(committerAppearsToBeHanging);
+                },
+                timeout: TimeSpan.FromSeconds(30));
+            
+            var committedOffsetCountSnapshot = consumer1.CommittedOffsets.Count;
+
+            consumer1HandleDelay = TimeSpan.Zero;
+            await Wait.UntilAsync("Consumer1 has consumed some more",
+                async () =>
+                {
+                    Assert.True(consumer1MessagesConsumed.Count > 120, $"{consumer1MessagesConsumed.Count} only");
+                },
+                timeout: TimeSpan.FromSeconds(30));
+
+            await Wait.UntilAsync("Commit queue is full",
+                async () =>
+                {
+                    Assert.True(commitQueueFull);
+                },
+                timeout: TimeSpan.FromSeconds(30));
+            
+            // Verify no new commits since blocking
+            Assert.Equal(committedOffsetCountSnapshot, consumer1.CommittedOffsets.Count);
+
+            // Unblock commits
+            consumer1CommitBlocker.SetResult();
+            consumer1HandleDelay = TimeSpan.FromMilliseconds(250);
+            Assert.True(consumer1MessagesConsumed.Count < 500, $"Consumer1 has already consumed {consumer1MessagesConsumed.Count}");
 
             await using KafkaConsumerSpy<string, string> consumer2 = await this.Topic.GetConsumerAsync(consumerGroupId);
             isConsumer2Started = true;
             Parallafka<string, string> parallafka2 = new(consumer2, NewParallafkaConfig());
-            parallafka2.OnMessageCommitted = parallafka1.OnMessageCommitted;
             CancellationTokenSource parallafka2Cancel = new();
             Task consumeTask2 = parallafka2.ConsumeAsync(async msg =>
                 {
@@ -137,14 +187,14 @@ namespace Parallafka.Tests.Rebalance
             await Wait.UntilAsync("Rebalanced after Consumer2 joined",
                 async () =>
                 {
-                    Assert.True(hasConsumer1Rebalanced);
+                    Assert.True(hasConsumer1Rebalanced, "Consumer 1 did not rebalance"); // I guess because that call is part of Poll(), and it's stuck due to backpressure?
                 },
                 timeout: TimeSpan.FromSeconds(30));
 
             await Wait.UntilAsync("Consumer2 has consumed some",
                 async () =>
                 {
-                    Assert.True(consumer2MessagesConsumed.Count > 80);
+                    Assert.True(consumer2MessagesConsumed.Count > 80, $"Consumer2 consumed {consumer2MessagesConsumed.Count}");
                 },
                 timeout: TimeSpan.FromSeconds(30));
 
@@ -167,6 +217,8 @@ namespace Parallafka.Tests.Rebalance
 
             verifier.AddConsumedMessages(messagesConsumedOverall);
             verifier.AssertConsumedAllSentMessagesProperly();
+            // Understand why this fails with out of order when rebalance-restart is commented out.
+            // Would this fail WITH the solution, were the poller to reset to its most recent commit?
 
             await Wait.UntilAsync("All messages were committed",
                 async () =>

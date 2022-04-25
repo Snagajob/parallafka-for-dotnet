@@ -24,6 +24,11 @@ namespace Parallafka
         /// </summary>
         internal Func<KafkaMessageWrapped<TKey, TValue>, Task> OnMessageCommitted { get; set; }
 
+        /// <summary>
+        /// For testing.
+        /// </summary>
+        internal Action OnCommitQueueFull { get; set; } = () => {};
+
         private SemaphoreSlim _pollerLock = new(initialCount: 1);
 
         public Parallafka(
@@ -168,7 +173,8 @@ namespace Parallafka
                         processor.Completion.Wait();
                     },
                     onMessageCommitted: this.OnMessageCommitted,
-                    logger: this._logger);
+                    logger: this._logger,
+                    onCommitQueueFull: () => this.OnCommitQueueFull());
 
                 this._getStats = () => new
                 {
@@ -262,6 +268,8 @@ namespace Parallafka
 
             public Task Completion => this._completionSource.Task;
 
+            private readonly Action _onCommitQueueFull;
+
             public Pipeline(
                 IParallafkaConfig config,
                 IKafkaConsumer<TKey, TValue> consumer,
@@ -269,7 +277,8 @@ namespace Parallafka
                 Func<IKafkaMessage<TKey, TValue>, Task> messageHandlerAsync,
                 Action<IReadOnlyCollection<TopicPartition>, Pipeline> onPartitionsRevoked,
                 Func<KafkaMessageWrapped<TKey, TValue>, Task> onMessageCommitted,
-                ILogger logger)
+                ILogger logger,
+                Action onCommitQueueFull = null)
             {
                 this._config = config;
                 this._consumer = consumer;
@@ -278,6 +287,7 @@ namespace Parallafka
                 this._onPartitionsRevoked = onPartitionsRevoked;
                 this._onMessageCommitted = onMessageCommitted;
                 this._logger = logger;
+                this._onCommitQueueFull = onCommitQueueFull;
             }
 
             public void InitiateShutdown(TimeSpan delayToFinishUpBeforeHardStop)
@@ -341,6 +351,7 @@ namespace Parallafka
 
                 commitState.OnMessageQueueFull += (sender, args) =>
                 {
+                    this._onCommitQueueFull?.Invoke();
                     commitPoller.CommitNow();
                 };
 
