@@ -82,7 +82,7 @@ namespace Parallafka
                     await this._consumer.CommitAsync(messageToCommit.Message, cancellationToken);
                     if (this._onCommitAsync != null)
                     {
-                        await this._onCommitAsync.Invoke(messageToCommit);
+                        await Task.WhenAny(this._onCommitAsync.Invoke(messageToCommit), Task.Delay(-1, cancellationToken));
                     }
                     Interlocked.Increment(ref this._messagesCommitted);
                     break;

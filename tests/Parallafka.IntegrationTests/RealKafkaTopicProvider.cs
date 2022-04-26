@@ -63,29 +63,48 @@ namespace Parallafka.IntegrationTests
                     GroupId = groupId,
                     AutoOffsetReset = AutoOffsetReset.Earliest,
                     EnableAutoCommit = false,
+                    PartitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky,
                     // EnablePartitionEof = true,
                 }).SetPartitionsRevokedHandler((c, partitions) =>
                 {
-                    var ptns = partitions.Select(p => new KafkaConsumer.TopicPartition(p.Topic, p.Partition)).ToList();
-                    foreach (var handler in partitionsRevokedHandlers)
+                    lock (partitionsRevokedHandlers)
                     {
-                        handler.Invoke(ptns);
+                        var ptns = partitions.Select(p => new KafkaConsumer.TopicPartition(p.Topic, p.Partition)).ToList();
+                        foreach (var handler in partitionsRevokedHandlers)
+                        {
+                            handler.Invoke(ptns);
+                        }
                     }
                 })
                 .SetPartitionsAssignedHandler((c, partitions) =>
                 {
-                    var ptns = partitions.Select(p => new KafkaConsumer.TopicPartition(p.Topic, p.Partition)).ToList();
-                    foreach (var handler in partitionsAssignedHandlers)
+                    lock (partitionsAssignedHandlers)
                     {
-                        handler.Invoke(ptns);
+                        var ptns = partitions.Select(p => new KafkaConsumer.TopicPartition(p.Topic, p.Partition)).ToList();
+                        foreach (var handler in partitionsAssignedHandlers)
+                        {
+                            handler.Invoke(ptns);
+                        }
                     }
                 });
             IConsumer<string, string> consumer = consumerBuilder.Build();
 
             consumer.Subscribe(this._topicName);
             var adapter = new ConfluentConsumerAdapter<string, string>(consumer, this._topicName,
-                addPartitionsRevokedHandler: partitionsRevokedHandlers.Add,
-                addPartitionsAssignedHandler: partitionsAssignedHandlers.Add);
+                addPartitionsRevokedHandler: handler =>
+                {
+                    lock (partitionsRevokedHandlers)
+                    {
+                        partitionsRevokedHandlers.Add(handler);
+                    }
+                },
+                addPartitionsAssignedHandler: handler =>
+                {
+                    lock (partitionsAssignedHandlers)
+                    {
+                        partitionsAssignedHandlers.Add(handler);
+                    }
+                });
 
             return new KafkaConsumerSpy<string, string>(adapter);
         }

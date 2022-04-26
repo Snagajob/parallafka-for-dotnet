@@ -100,6 +100,7 @@ namespace Parallafka.Adapters.ConfluentKafka
 
         public Task AssignAsync(IEnumerable<KafkaConsumer.TopicPartition> topicPartitions)
         {
+            throw new NotImplementedException();
             this._confluentConsumer.Subscribe(this._topic);
             this._confluentConsumer.Assign(topicPartitions.Select(ToConfluentModel));
             return Task.CompletedTask;
@@ -107,6 +108,7 @@ namespace Parallafka.Adapters.ConfluentKafka
 
         public Task UnassignAsync()
         {
+            throw new NotImplementedException();
             this._confluentConsumer.Unsubscribe();
             return Task.CompletedTask;
         }

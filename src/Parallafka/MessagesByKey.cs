@@ -21,6 +21,8 @@ namespace Parallafka
         private readonly TaskCompletionSource _completedSource;
         private bool _completed;
 
+        public int SharedKeyMessagesQueuedCount => this._messagesToHandleForKey.Sum(kvp => kvp.Value?.Count ?? 0);
+
         /// <summary>
         /// Creates a new instance of <see cref="MessagesByKey{TKey,TValue}"/>
         /// </summary>

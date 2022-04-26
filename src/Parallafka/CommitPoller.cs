@@ -156,7 +156,7 @@ namespace Parallafka
         {
             this._state = "committing";
             Interlocked.Increment(ref this._totalCommits);
-            return this._committer.CommitNow(default);
+            return this._committer.CommitNow(default); // TODO: why default? Using this._cancellationToken prevents rebalance
         }
     }
 }

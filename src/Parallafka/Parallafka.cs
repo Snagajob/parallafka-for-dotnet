@@ -27,9 +27,13 @@ namespace Parallafka
         /// <summary>
         /// For testing.
         /// </summary>
-        internal Action OnCommitQueueFull { get; set; } = () => {};
+        //internal Action OnCommitQueueFull { get; set; } = () => {}; // doesn't work
+
+        internal int SharedKeyMessagesQueuedCount => this._currentProcessor?.SharedKeyMessagesQueuedCount ?? 0;
 
         private SemaphoreSlim _pollerLock = new(initialCount: 1);
+
+        private Pipeline _currentProcessor;
 
         public Parallafka(
             IKafkaConsumer<TKey, TValue> consumer,
@@ -125,7 +129,7 @@ namespace Parallafka
                     if (partitions.Count == 0)
                     {
                         Parallafka<string, string>.WriteLine("PartitionsAssigned is empty");
-                        return;
+                        //return; // twas this
                     }
                     Parallafka<string, string>.WriteLine($"Partitions assigned: " + string.Join(", ", partitions.Select(p => p.Partition)));
                     partitionsAssigned = partitions;
@@ -143,7 +147,7 @@ namespace Parallafka
 
                 var partitionsAssignedBeforeRebalance = partitionsAssigned;
 
-                Pipeline processor = new(
+                this._currentProcessor = new Pipeline(
                     config: this._config,
                     consumer: this._consumer,
                     messageSource: messageSource,
@@ -167,23 +171,23 @@ namespace Parallafka
 
                         Parallafka<string, string>.WriteLine("messages buffered from poller: " + polledMessages.Count);
 
-                        processor.InitiateShutdown(delayToFinishUpBeforeHardStop: TimeSpan.FromSeconds(10));
+                        processor.InitiateShutdown(delayToFinishUpBeforeHardStop: TimeSpan.FromSeconds(10)); // catch it here, see what happens in processor
 
                         Parallafka<string, string>.WriteLine("Waiting for processor to shut down");
                         processor.Completion.Wait();
                     },
                     onMessageCommitted: this.OnMessageCommitted,
                     logger: this._logger,
-                    onCommitQueueFull: () => this.OnCommitQueueFull());
+                    onCommitQueueFull: () => { /* TODO: remove */});
 
                 this._getStats = () => new
                 {
                     ConsumeCallDuration = runtime.Elapsed.ToString("g"),
                     ConsumeCallDurationMs = runtime.ElapsedMilliseconds,
-                    Pipeline = processor.GetStats(),
+                    Pipeline = this._currentProcessor.GetStats(),
                 };
 
-                await processor.ProcessAsync(pipelineStop.Token);
+                await this._currentProcessor.ProcessAsync(pipelineStop.Token);
                 if (userStopToken.IsCancellationRequested)
                 {
                     break;
@@ -197,14 +201,16 @@ namespace Parallafka
                     throw new Exception("partitionsAssigned is null");
                 }
 
-                while (partitionsAssigned == partitionsAssignedBeforeRebalance)
+                while (partitionsAssigned.Count > 0 && partitionsAssigned == partitionsAssignedBeforeRebalance) // TODO
                 {
                     Parallafka<string, string>.WriteLine("Waiting for new assignment"); // and for purge
                     await Task.Delay(50);
                 }
-                string oldPts = string.Join(", ", partitionsAssignedBeforeRebalance.Select(p => p.Partition));
-                string newPts = string.Join(", ", partitionsAssigned.Select(p => p.Partition));
-                Parallafka<string, string>.WriteLine($"Done waiting for new assignment. {oldPts} -> {newPts}");
+                
+                //string oldPts = string.Join(", ", partitionsAssignedBeforeRebalance.Select(p => p.Partition));
+                //string newPts = string.Join(", ", partitionsAssigned.Select(p => p.Partition));
+                Parallafka<string, string>.WriteLine($"Done waiting for new assignment.");
+                
 
                 // await this._pollerLock.WaitAsync();
 
@@ -268,7 +274,11 @@ namespace Parallafka
 
             public Task Completion => this._completionSource.Task;
 
+            public int SharedKeyMessagesQueuedCount => this._messagesByKey?.SharedKeyMessagesQueuedCount ?? 0;
+
             private readonly Action _onCommitQueueFull;
+
+            private MessagesByKey<TKey, TValue> _messagesByKey;
 
             public Pipeline(
                 IParallafkaConfig config,
@@ -315,7 +325,7 @@ namespace Parallafka
                     maxQueuedMessages,
                     hardStopper.Token);
 
-                var messagesByKey = new MessagesByKey<TKey, TValue>(hardStopper.Token);
+                var messagesByKey = this._messagesByKey = new MessagesByKey<TKey, TValue>(hardStopper.Token);
 
                 // the message router ensures messages are handled by key in order
                 var router = new MessageRouter<TKey, TValue>(commitState, messagesByKey, hardStopper.Token);

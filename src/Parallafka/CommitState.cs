@@ -27,6 +27,8 @@ namespace Parallafka
         private readonly SemaphoreSlim _canQueueMessage;
         private readonly CancellationToken _stopToken;
 
+        private int mmq = -1;
+
         /// <summary>
         /// Creates a new instance of CommitState
         /// </summary>
@@ -35,6 +37,8 @@ namespace Parallafka
         public CommitState(int maxMessagesQueued, CancellationToken stopToken)
         {
             this._canQueueMessage = new(maxMessagesQueued);
+
+            mmq = maxMessagesQueued;
             this._stopToken = stopToken;
             this._messagesNotYetCommittedByPartition = new();
             this._messagesNotYetCommittedByPartitionReaderWriterLock = new();

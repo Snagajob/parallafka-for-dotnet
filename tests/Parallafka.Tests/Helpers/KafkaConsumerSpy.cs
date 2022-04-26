@@ -38,12 +38,12 @@ namespace Parallafka.Tests
 
         public Task AssignAsync(IEnumerable<TopicPartition> topicPartitions)
         {
-            return this._backingConsumer.AssignAsync(topicPartitions);
+            throw new NotImplementedException(); //return this._backingConsumer.AssignAsync(topicPartitions);
         }
 
         public Task UnassignAsync()
         {
-            return this._backingConsumer.UnassignAsync();
+            throw new NotImplementedException(); //return this._backingConsumer.UnassignAsync();
         }
 
         public void AddPartitionsRevokedHandler(Action<IReadOnlyCollection<TopicPartition>> onPartitionsRevoked)
