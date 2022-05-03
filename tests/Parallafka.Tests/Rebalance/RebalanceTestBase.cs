@@ -205,7 +205,7 @@ namespace Parallafka.Tests.Rebalance
             // I don't think this will make the test fail before salvaging is implemented because this uses the Eager rebalance protocol.
             // If messages are uncommitted for a partition, I think it will receive them all again even if it had the same partition before.
 
-            //consumer1HandleDelay = TimeSpan.FromMilliseconds(500);
+            consumer1HandleDelay = TimeSpan.FromMilliseconds(500);
             // Hang the next commit
             TaskCompletionSource consumer1CommitBlocker = new();
             bool committerAppearsToBeHanging = false;
@@ -247,17 +247,17 @@ namespace Parallafka.Tests.Rebalance
             // Resume consumer1 handler to allow rebalance
             consumer1HandlerHang.SetResult();
 
-                        consumer1CommitBlocker.SetResult();//? why necessary???
+                        //consumer1CommitBlocker.SetResult();//? why necessary???
 
             await Wait.UntilAsync("Rebalanced after Consumer2 joined",
                 async () =>
                 {
-                    this.Console.WriteLine(consumer1MessagesConsumed.Count.ToString());
+                    this.Console.WriteLine($"{consumer1MessagesConsumed.Count.ToString()} consumed by consumer1");
                     //Assert.True(consumer1MessagesConsumed.Count < 1500, $"Consumer1 has already consumed {consumer1MessagesConsumed.Count}");
                     Assert.True(hasConsumer1Rebalanced, "Consumer 1 did not rebalance"); // I guess because that call is part of Poll(), and it's stuck due to backpressure?
                     //Assert.False(commitQueueFull);
                 },
-                timeout: TimeSpan.FromSeconds(88));
+                timeout: TimeSpan.FromSeconds(30));
 
             // // Unblock commits
             //consumer1CommitBlocker.SetResult();

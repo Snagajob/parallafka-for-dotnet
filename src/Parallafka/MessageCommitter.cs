@@ -83,12 +83,14 @@ namespace Parallafka
                     if (this._onCommitAsync != null)
                     {
                         await Task.WhenAny(this._onCommitAsync.Invoke(messageToCommit), Task.Delay(-1, cancellationToken));
+                        Parallafka<TKey, TValue>.WriteLine($"MsgCommitter: didcommit {messageToCommit.Offset} and finished... ct " + cancellationToken.IsCancellationRequested);
                     }
                     Interlocked.Increment(ref this._messagesCommitted);
                     break;
                 }
                 catch (OperationCanceledException)
                 {
+                    Parallafka<TKey, TValue>.WriteLine($"MsgCommitter: {messageToCommit.Offset} ct Op canceled! " + cancellationToken.IsCancellationRequested);
                     throw;
                 }
                 catch (Exception e)

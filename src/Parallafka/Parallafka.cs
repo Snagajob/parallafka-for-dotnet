@@ -153,13 +153,13 @@ namespace Parallafka
                     messageSource: messageSource,
                     messageHandlerAsync: async m =>
                     {
-                        if (partitionsAssigned != null)
-                        {
-                            if (!partitionsAssigned.Any(p => p.Partition == m.Offset.Partition))
-                            {
-                                Parallafka<string, string>.WriteLine($"Attempting to process a message with revoked partition! {m.Offset.Partition}");
-                            }
-                        }
+                        // if (partitionsAssigned != null) // TODO: redo this to support cooperative rebalancing
+                        // {
+                        //     if (!partitionsAssigned.Any(p => p.Partition == m.Offset.Partition))
+                        //     {
+                        //         Parallafka<string, string>.WriteLine($"Attempting to process a message with revoked partition! {m.Offset.Partition}");
+                        //     }
+                        // }
                         await messageHandlerAsync(m);
                     },
                     onPartitionsRevoked: (partitions, processor) =>
@@ -175,6 +175,7 @@ namespace Parallafka
 
                         Parallafka<string, string>.WriteLine("Waiting for processor to shut down");
                         processor.Completion.Wait();
+                        Parallafka<string, string>.WriteLine("Done waiting for processor to shut down");
                     },
                     onMessageCommitted: this.OnMessageCommitted,
                     logger: this._logger,
@@ -425,34 +426,41 @@ namespace Parallafka
 
                 // done polling, wait for the routingTarget to finish
                 state = "Shutdown: Awaiting message routing";
+                WriteLine(state);
                 routingTarget.Complete();
                 await routingTarget.Completion;
 
                 // wait for the router to finish (it should already be done)
                 state = "Shutdown: Awaiting message handler";
+                WriteLine(state);
                 router.MessagesToHandle.Complete();
                 await router.MessagesToHandle.Completion;
 
                 // wait for the finishedRoute to complete handling all the queued messages
                 finishedRouter.Complete();
                 state = "Shutdown: Awaiting message routing completion";
+                WriteLine(state);
                 await finishedRouter.Completion;
 
                 // wait for the message handler to complete (should already be done)
                 state = "Shutdown: Awaiting handler shutdown";
+                WriteLine(state);
                 handlerTarget.Complete();
                 await handlerTarget.Completion;
 
                 state = "Shutdown: Awaiting handled shutdown";
+                WriteLine(state);
                 handler.MessageHandled.Complete();
                 await handler.MessageHandled.Completion;
 
                 state = "Shutdown: Awaiting handled target shutdown";
+                WriteLine(state);
                 messageHandledTarget.Complete();
                 await messageHandledTarget.Completion;
 
                 // wait for the committer to finish
                 state = "Shutdown: Awaiting message commit poller";
+                WriteLine(state);
                 commitPoller.Complete();
                 await commitPoller.Completion;
 

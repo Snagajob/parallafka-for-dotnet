@@ -152,11 +152,28 @@ namespace Parallafka
             this._state = "completed";
         }
 
-        private Task PerformCommit()
+        private async Task PerformCommit()
         {
             this._state = "committing";
             Interlocked.Increment(ref this._totalCommits);
-            return this._committer.CommitNow(default); // TODO: why default? Using this._cancellationToken prevents rebalance
+            try
+            {
+                var timeoutToken = new CancellationTokenSource(15000).Token;
+                var cancelToken = this._cancellationToken.IsCancellationRequested ? timeoutToken : this._cancellationToken;
+                await this._committer.CommitNow(/*this._cancellationToken*/ cancelToken);
+                // TODO: why default?
+                // With CT cancelled, commitNow does NOT commit, whereas with default it still does on shutdown.
+                // If it doesn't commit the last messages, then they get handled again? Out of order for a given key? Why?
+                // Probably just with cooperative rebalancing, because it doesn't commit despite handling, so consumer2 gets it, say 35, handles 36, then consumer1.
+                // Nope, fails without co-op, and passes with default either way.
+
+                // Well think about: consumer1 handles for key K: 34, 35, 36, after having committed 33. Rebalance triggered. Fails to commit due to CT.
+                // This partition is transferred to consumer2. It starts at 34. So messagesConsumed: 32, 33, 34, 35, 36, [rebalance] 34, 35, 36, 37
+            }
+            catch (OperationCanceledException)
+            {
+                Parallafka<string, string>.WriteLine($"OH NO");
+            }
         }
     }
 }
