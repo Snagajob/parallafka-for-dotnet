@@ -51,6 +51,56 @@ namespace Parallafka.Tests.Rebalance
             }
         }
 
+        /*
+
+        - When a rebalance is initiated, Parallafka consumers/instances that are to lose partitions do not handle or commit messages from lost partitions
+        after the rebalance.
+
+        - After a rebalance, if there are partitions NOT revoked from an instance, the messages are all still processed and committed.
+        (Maybe multiple times, but in order and eventually consistent.)
+
+        - When we detect that partitions are lost or revoked despite not receiving a pre-rebalance callback, we make
+        a best-effort attempt to restore normal consumption without losing messages overall or risking race conditions from
+        multiple consumers handling the same partition.
+        This plays nicely with the rebalance callbacks if both occur.
+
+        - Supports back-to-back rebalances occurring during a running rebalance callback.
+
+        - Test the tests. Show that they fail without the rebalance logic.
+
+
+
+        Start C1. Consume a bit. Produce a bunch of messages with the same key for each partition and
+        ensure they are queued up before handling. Pause handling and allow for polling to a point, to accumulate these.
+        This would mean, without rebalance logic, that revoked-partition messages would be handled post-rebalance when handling resumes.
+        Start C2. Resume C1 handler. Assert rebalance. Finish consuming all messages.
+        Assert that C1 did not consume or commit any messages from its revoked partitions after the rebalance.
+        Assert that the overall handling order is correct, allowing for replays.
+        Assert that all messages were handled, showing that we didn't purge queues of retained partitions.
+
+
+        Start C1. Consume a bit. Produce a bunch of messages with the same key for each partition and
+        ensure they are queued up before handling. Pause handling and allow for polling to a point, to accumulate these.
+        This would mean, without rebalance logic, that revoked-partition messages would be handled post-rebalance when handling resumes.
+        Somehow we need to cause or simulate the errors we get on commit calls when the consumer no longer
+        owns the partition. Maybe we override the normal rebalance callback logic to simulate receiving the errors without
+        receiving the callbacks. The point is to show that the errors trigger the same resolution as the graceful-rebalance callbacks.
+
+
+        Start C1. Consume a bit. Produce a bunch of messages with the same key for each partition and
+        ensure they are queued up before handling. Pause handling and allow for polling to a point, to accumulate these.
+        This would mean, without rebalance logic, that revoked-partition messages would be handled post-rebalance when handling resumes.
+        Somehow we need to cause or simulate the errors we get on commit calls when the consumer no longer
+        owns the partition. Maybe we override the normal rebalance callback logic to simulate receiving the errors without
+        receiving the callbacks. The point is to show that the errors trigger the same resolution as the graceful-rebalance callbacks.
+        We also want to demonstrate that the errors can be received and handled in tandem with the callbacks.
+        Trigger the errors, then the callbacks, and assert that the completion & order outcome is correct.
+
+
+        For all of these tests, have a version where the rebalance logic is disabled, and assert that their assertions fail.
+
+        */
+
         public virtual async Task TestRebalanceAsync()
         {
             var publishTask = this.PublishTestMessagesAsync(2500, duplicateKeys: true);
@@ -114,7 +164,6 @@ namespace Parallafka.Tests.Rebalance
                 partitionsAssignedToConsumer1.RemoveWhere(partitionsRevoked.Contains);
             });
 
-
             consumer1.AddPartitionsAssignedHandler(partitions =>
             {
                 Parallafka<string, string>.WriteLine(consumer1.ToString() + "ASSIGNING PARTITIONS !!! " + string.Join(", ", partitions.Select(p => p.Partition)));
@@ -138,13 +187,8 @@ namespace Parallafka.Tests.Rebalance
                 },
                 timeout: TimeSpan.FromSeconds(15));
 
-            //consumer1HandleDelay = TimeSpan.FromMilliseconds(500);
-
-            //bool commitQueueFull = false;
-            //parallafka1.OnCommitQueueFull = () => commitQueueFull = true;
-
             // Hang the next commit
-            // TaskCompletionSource consumer1CommitBlocker = new();
+            TaskCompletionSource consumer1CommitBlocker = new();
             // bool committerAppearsToBeHanging = false;
             // consumer1OnMessageCommittedAsync = msg =>
             // {
@@ -157,80 +201,11 @@ namespace Parallafka.Tests.Rebalance
             //         Assert.True(committerAppearsToBeHanging);
             //     },
             //     timeout: TimeSpan.FromSeconds(30));
-            
-            // var committedOffsetCountSnapshot = consumer1.CommittedOffsets.Count;
-
-            // consumer1HandleDelay = TimeSpan.Zero;
-            // await Wait.UntilAsync("Consumer1 has consumed some more",
-            //     async () =>
-            //     {
-            //         Assert.True(consumer1MessagesConsumed.Count > 120, $"{consumer1MessagesConsumed.Count} only");
-            //     },
-            //     timeout: TimeSpan.FromSeconds(30));
-
-            // await Wait.UntilAsync("Commit queue is full",
-            //     async () =>
-            //     {
-            //         Assert.True(commitQueueFull);
-            //     },
-            //     timeout: TimeSpan.FromSeconds(30));
-            
-            // // Verify no new commits since blocking
-            // Assert.Equal(committedOffsetCountSnapshot, consumer1.CommittedOffsets.Count);
-
-
-
-            // Assert.True(parallafka1.SharedKeyMessagesQueuedCount > 10,
-            //     $"Shared-key messages queued: {parallafka1.SharedKeyMessagesQueuedCount}");
-
-            // Hang the handler so we know we'll have messages from stale partitions queued up after we start committing again.
-            // TODO: This should verify we have a shared-key message from EACH partition queued up.
-            // TaskCompletionSource consumer1HandlerHang = new();
-            // onConsumer1ConsumedAsync = () => consumer1HandlerHang.Task;
-
-            // We want to have messages queued up from each partition at the time of rebalance so we can show that the test fails before
-            // we add the salvaging
-
-            // Unblock commits. This lets the poller keep going, which is apparently necessary to receive the rebalance callback.
-            //consumer1CommitBlocker.SetResult();
-            //consumer1HandleDelay = TimeSpan.FromMilliseconds(500);
-            //Assert.True(consumer1MessagesConsumed.Count < 400, $"Consumer1 has already consumed {consumer1MessagesConsumed.Count}");
-
-
-
-
-            // what if we pause commits AND handling below the max-queued, then resume handling once consumer2 is online, to trigger rebalance? ****
-            // Pause commits. Then pause handling after N are consumed. Then start consumer2. Then resume handling until queues are at capacity.
-            // Rebalance should happen, with uncommitted stuff in c1.
-            // I don't think this will make the test fail before salvaging is implemented because this uses the Eager rebalance protocol.
-            // If messages are uncommitted for a partition, I think it will receive them all again even if it had the same partition before.
-
-            consumer1HandleDelay = TimeSpan.FromMilliseconds(500);
-            // Hang the next commit
-            TaskCompletionSource consumer1CommitBlocker = new();
-            bool committerAppearsToBeHanging = false;
-            consumer1OnMessageCommittedAsync = msg =>
-            {
-                committerAppearsToBeHanging = true;
-                return consumer1CommitBlocker.Task;
-            };
-            await Wait.UntilAsync("Committer appears to be hanging as expected",
-                async () =>
-                {
-                    Assert.True(committerAppearsToBeHanging);
-                },
-                timeout: TimeSpan.FromSeconds(30));
 
             // Hang consumer1's handler while we let consumer2 come online
             TaskCompletionSource consumer1HandlerHang = new();
             onConsumer1ConsumedAsync = () => consumer1HandlerHang.Task;
             //Assert.True(consumer1MessagesConsumed.Count < 500, $"Consumer1 has already consumed {consumer1MessagesConsumed.Count}");
-
-            // trying to get rebalance to work despite hung committer by eliminating the queue size cap.
-            // It's looking like rebalance does not happen without the committer rolling for some reason.
-            // Is it because it's hanging the pipeline?
-            // Is it because Kafka wants to see it catch up?
-            // It looks like the handlers are still going while it's waiting for a rebalance.
 
             await using KafkaConsumerSpy<string, string> consumer2 = await this.Topic.GetConsumerAsync(consumerGroupId);
             isConsumer2Started = true;
@@ -247,8 +222,6 @@ namespace Parallafka.Tests.Rebalance
             // Resume consumer1 handler to allow rebalance
             consumer1HandlerHang.SetResult();
 
-                        //consumer1CommitBlocker.SetResult();//? why necessary???
-
             await Wait.UntilAsync("Rebalanced after Consumer2 joined",
                 async () =>
                 {
@@ -257,7 +230,7 @@ namespace Parallafka.Tests.Rebalance
                     Assert.True(hasConsumer1Rebalanced, "Consumer 1 did not rebalance"); // I guess because that call is part of Poll(), and it's stuck due to backpressure?
                     //Assert.False(commitQueueFull);
                 },
-                timeout: TimeSpan.FromSeconds(30));
+                timeout: TimeSpan.FromSeconds(33));
 
             // // Unblock commits
             //consumer1CommitBlocker.SetResult();
