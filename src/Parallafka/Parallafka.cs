@@ -147,6 +147,8 @@ namespace Parallafka
 
                 var partitionsAssignedBeforeRebalance = partitionsAssigned;
 
+                IEnumerable<int> partitionsRevoked = Enumerable.Empty<int>();
+
                 this._currentProcessor = new Pipeline(
                     config: this._config,
                     consumer: this._consumer,
@@ -164,6 +166,7 @@ namespace Parallafka
                     },
                     onPartitionsRevoked: (partitions, processor) =>
                     {
+                        partitionsRevoked = partitions.Select(p => p.Partition);
                         partitionsAssignedBeforeRebalance = partitionsAssigned;
 
                         Parallafka<string, string>.WriteLine(
@@ -211,6 +214,13 @@ namespace Parallafka
                 //string oldPts = string.Join(", ", partitionsAssignedBeforeRebalance.Select(p => p.Partition));
                 //string newPts = string.Join(", ", partitionsAssigned.Select(p => p.Partition));
                 Parallafka<string, string>.WriteLine($"Done waiting for new assignment.");
+
+                uncommittedMessages = this._currentProcessor._commitState
+                    .MessagesNotYetCommittedByPartition
+                    .Where(p => !partitionsRevoked.Contains(p.Key))
+                    .SelectMany(p => p.Value);
+                
+                Parallafka<string, string>.WriteLine($"Uncommitted messages: " + uncommittedMessages.Count());
                 
 
                 // await this._pollerLock.WaitAsync();
@@ -279,7 +289,9 @@ namespace Parallafka
 
             private readonly Action _onCommitQueueFull;
 
-            private MessagesByKey<TKey, TValue> _messagesByKey;
+            public MessagesByKey<TKey, TValue> _messagesByKey;
+
+            public CommitState<TKey, TValue> _commitState;
 
             public Pipeline(
                 IParallafkaConfig config,
@@ -322,7 +334,7 @@ namespace Parallafka
 
                 int maxQueuedMessages = this._config.MaxQueuedMessages;
 
-                var commitState = new CommitState<TKey, TValue>(
+                var commitState = this._commitState = new CommitState<TKey, TValue>(
                     maxQueuedMessages,
                     hardStopper.Token);
 
@@ -344,6 +356,7 @@ namespace Parallafka
                     this._messageHandlerAsync,
                     this._logger,
                     hardStopper.Token);
+                //CancellationTokenSource handlerTargetCancel = new();
                 var handlerTarget = new ActionBlock<KafkaMessageWrapped<TKey, TValue>>(handler.HandleMessage,
                     new ExecutionDataflowBlockOptions
                     {
@@ -382,6 +395,7 @@ namespace Parallafka
                     {
                         BoundedCapacity = 1000
                     });
+
                 handler.MessageHandled.LinkTo(messageHandledTarget);
 
                 this._consumer.AddPartitionsRevokedHandler(partitions =>
@@ -428,43 +442,62 @@ namespace Parallafka
                 state = "Shutdown: Awaiting message routing";
                 WriteLine(state);
                 routingTarget.Complete();
-                await routingTarget.Completion;
+                //await routingTarget.Completion;
 
                 // wait for the router to finish (it should already be done)
                 state = "Shutdown: Awaiting message handler";
                 WriteLine(state);
                 router.MessagesToHandle.Complete();
-                await router.MessagesToHandle.Completion;
+                //await router.MessagesToHandle.Completion;
 
                 // wait for the finishedRoute to complete handling all the queued messages
                 finishedRouter.Complete();
                 state = "Shutdown: Awaiting message routing completion";
                 WriteLine(state);
-                await finishedRouter.Completion;
+                //await finishedRouter.Completion;
+                // Maybe await this later, after its targets are done, and after salvaging anything within
+                // to feed back in to the new pipeline.
+
+                // Currently, stopping the pipeline means stopping the input/poller and waiting for queues to empty and all messages to be handled.
+                // I think we should force-stop everything, requesting a shutdown and waiting a little while for graceful completion before abandoning.
+                // Stop the poller and committer first?
+                // We should look at the received-but-not-committed messages for all partitions not revoked, and feed those in to the new pipeline.
 
                 // wait for the message handler to complete (should already be done)
                 state = "Shutdown: Awaiting handler shutdown";
                 WriteLine(state);
                 handlerTarget.Complete();
-                await handlerTarget.Completion;
+                //await handlerTarget.Completion;
 
                 state = "Shutdown: Awaiting handled shutdown";
                 WriteLine(state);
                 handler.MessageHandled.Complete();
-                await handler.MessageHandled.Completion;
+                //await handler.MessageHandled.Completion;
 
                 state = "Shutdown: Awaiting handled target shutdown";
                 WriteLine(state);
                 messageHandledTarget.Complete();
-                await messageHandledTarget.Completion;
+                //await messageHandledTarget.Completion;
 
                 // wait for the committer to finish
                 state = "Shutdown: Awaiting message commit poller";
                 WriteLine(state);
                 commitPoller.Complete();
-                await commitPoller.Completion;
+                //await commitPoller.Completion;
 
                 this._getStats = null;
+
+                await Task.WhenAny(
+                    Task.Delay(7000),
+                    Task.WhenAll(
+                        routingTarget.Completion,
+                        router.MessagesToHandle.Completion,
+                        finishedRouter.Completion,
+                        handlerTarget.Completion,
+                        handler.MessageHandled.Completion,
+                        messageHandledTarget.Completion,
+                        commitPoller.Completion
+                    ));
 
                 // commitState should be empty
                 WriteLine("Pipeline finished");

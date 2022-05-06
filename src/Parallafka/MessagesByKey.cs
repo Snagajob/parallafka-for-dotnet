@@ -17,7 +17,7 @@ namespace Parallafka
     internal class MessagesByKey<TKey, TValue>
     {
         private readonly CancellationToken _cancellationToken;
-        private readonly Dictionary<TKey, Queue<KafkaMessageWrapped<TKey, TValue>>> _messagesToHandleForKey;
+        public readonly Dictionary<TKey, Queue<KafkaMessageWrapped<TKey, TValue>>> _messagesToHandleForKey;
         private readonly TaskCompletionSource _completedSource;
         private bool _completed;
 
@@ -87,7 +87,7 @@ namespace Parallafka
 
                     if (this._completed)
                     {
-                        this._completedSource.TrySetResult();
+                        this._completedSource.TrySetResult(); // TODO
                     }
 
                     nextMessage = null;

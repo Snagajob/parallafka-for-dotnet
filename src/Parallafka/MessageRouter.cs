@@ -54,7 +54,7 @@ namespace Parallafka
 
             Interlocked.Increment(ref this._messagesRouted);
 
-            await this._commitState.EnqueueMessageAsync(message);
+            await this._commitState.EnqueueMessageAsync(message); // RC here during shutdown? TODO
 
             if (!this._messageByKey.TryAddMessageToHandle(message))
             {

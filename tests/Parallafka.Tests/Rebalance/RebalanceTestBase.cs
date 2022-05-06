@@ -114,13 +114,16 @@ namespace Parallafka.Tests.Rebalance
             {
                 return new()
                 {
-                    MaxDegreeOfParallelism = 7,
+                    MaxDegreeOfParallelism = 13,
                     Logger = new MyLogger(this),
                     MaxQueuedMessages = 3000
                 };
             }
 
             Parallafka<string, string>.WriteLine = this.Console.WriteLine;
+
+            HashSet<int> consumer1PartitionsBeingHandled = new();
+            bool monitorConsumer1PartitionsBeingHandled = false;
 
             bool hasConsumer1Rebalanced = false;
             bool isConsumer2Started = false;
@@ -137,8 +140,26 @@ namespace Parallafka.Tests.Rebalance
             CancellationTokenSource parallafka1Cancel = new();
             TimeSpan consumer1HandleDelay = TimeSpan.FromMilliseconds(50);
             Func<Task> onConsumer1ConsumedAsync = () => Task.CompletedTask;
+
+            TaskCompletionSource partitionHandlerThreadPause1 = new();
+            TaskCompletionSource partitionHandlerThreadPause2 = new();
+            Func<int, Task> onConsumer1HandlerThreadWonPartitionAsync = _ => Task.CompletedTask;
+
             Task consumeTask1 = parallafka1.ConsumeAsync(async msg =>
                 {
+                    bool wonPartition = false;
+                    if (monitorConsumer1PartitionsBeingHandled)
+                    {
+                        lock (consumer1PartitionsBeingHandled)
+                        {
+                            wonPartition = consumer1PartitionsBeingHandled.Add(msg.Offset.Partition);
+                        }
+                        if (wonPartition)
+                        {
+                            await onConsumer1HandlerThreadWonPartitionAsync(msg.Offset.Partition);
+                        }
+                    }
+                    
                     messagesConsumedOverall.Enqueue(msg);
                     consumer1MessagesConsumed.Enqueue(msg);
                     if (hasConsumer1Rebalanced) // TODO: thread safety
@@ -147,6 +168,14 @@ namespace Parallafka.Tests.Rebalance
                     }
                     await onConsumer1ConsumedAsync();
                     await Task.Delay(consumer1HandleDelay);
+
+                    if (monitorConsumer1PartitionsBeingHandled && wonPartition)
+                    {
+                        lock (consumer1PartitionsBeingHandled)
+                        {
+                            consumer1PartitionsBeingHandled.Remove(msg.Offset.Partition);
+                        }
+                    }
                 },
                 parallafka1Cancel.Token);
 
@@ -187,6 +216,29 @@ namespace Parallafka.Tests.Rebalance
                 },
                 timeout: TimeSpan.FromSeconds(15));
 
+            // await Wait.UntilAsync("Same-key messages are queued to be handled for each partition",
+            //     async () =>
+            //     {
+
+            //     },
+            //     timeout: TimeSpan.FromSeconds(30));
+
+            monitorConsumer1PartitionsBeingHandled = true;
+            onConsumer1HandlerThreadWonPartitionAsync = partition => partition % 2 == 0 ?
+                partitionHandlerThreadPause1.Task :
+                partitionHandlerThreadPause2.Task;
+            await Wait.UntilAsync("One message for each partition is being handled by a paused handler",
+                async () =>
+                {
+                    Assert.True(messagesConsumedOverall.Count < 2500);
+                    Assert.Equal(11, consumer1PartitionsBeingHandled.Count);
+                },
+                timeout: TimeSpan.FromSeconds(45));
+
+            partitionHandlerThreadPause1.SetResult();
+            partitionHandlerThreadPause2.SetResult();
+            monitorConsumer1PartitionsBeingHandled = false;
+
             // Hang the next commit
             TaskCompletionSource consumer1CommitBlocker = new();
             // bool committerAppearsToBeHanging = false;
@@ -207,6 +259,8 @@ namespace Parallafka.Tests.Rebalance
             onConsumer1ConsumedAsync = () => consumer1HandlerHang.Task;
             //Assert.True(consumer1MessagesConsumed.Count < 500, $"Consumer1 has already consumed {consumer1MessagesConsumed.Count}");
 
+
+
             await using KafkaConsumerSpy<string, string> consumer2 = await this.Topic.GetConsumerAsync(consumerGroupId);
             isConsumer2Started = true;
             Parallafka<string, string> parallafka2 = new(consumer2, NewParallafkaConfig());
@@ -222,6 +276,9 @@ namespace Parallafka.Tests.Rebalance
             // Resume consumer1 handler to allow rebalance
             consumer1HandlerHang.SetResult();
 
+            // Unblock every other handler thread. After rebalance, assert that some of the blocked-handler partitions running in C1
+            // have been transferred to C2.
+
             await Wait.UntilAsync("Rebalanced after Consumer2 joined",
                 async () =>
                 {
@@ -230,7 +287,10 @@ namespace Parallafka.Tests.Rebalance
                     Assert.True(hasConsumer1Rebalanced, "Consumer 1 did not rebalance"); // I guess because that call is part of Poll(), and it's stuck due to backpressure?
                     //Assert.False(commitQueueFull);
                 },
-                timeout: TimeSpan.FromSeconds(33));
+                timeout: TimeSpan.FromSeconds(333));
+
+            // partitionHandlerThreadPause.SetResult();
+            // monitorConsumer1PartitionsBeingHandled = false;
 
             // // Unblock commits
             //consumer1CommitBlocker.SetResult();
@@ -242,7 +302,7 @@ namespace Parallafka.Tests.Rebalance
                 },
                 timeout: TimeSpan.FromSeconds(30));
 
-            var messagesPublished = await publishTask;
+            IReadOnlyCollection<IKafkaMessage<string, string>> messagesPublished =  await publishTask;
             ConsumptionVerifier verifier = new();
             verifier.AddSentMessages(messagesPublished);
 

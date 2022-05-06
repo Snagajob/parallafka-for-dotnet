@@ -21,7 +21,7 @@ namespace Parallafka
         /// It's safe to commit a handled message provided all earlier (lower-offset) messages have also been marked
         /// as handled.
         /// </summary>
-        private readonly Dictionary<int, ConcurrentQueue<KafkaMessageWrapped<TKey, TValue>>> _messagesNotYetCommittedByPartition;
+        public readonly Dictionary<int, ConcurrentQueue<KafkaMessageWrapped<TKey, TValue>>> _messagesNotYetCommittedByPartition;
         private readonly ReaderWriterLockSlim _messagesNotYetCommittedByPartitionReaderWriterLock;
 
         private readonly SemaphoreSlim _canQueueMessage;
@@ -145,12 +145,7 @@ namespace Parallafka
             messagesInPartition.Enqueue(message);
             Parallafka<TKey, TValue>.WriteLine($"CS:EnqueueMessage: {message.Key} {message.Offset}");
         }
-
-        public void PurgeRecordsFromPartitions(IEnumerable<int> partitions)
-        {
-            // TODO
-        }
-
+        
         public object GetStats()
         {
             this._messagesNotYetCommittedByPartitionReaderWriterLock.EnterReadLock();

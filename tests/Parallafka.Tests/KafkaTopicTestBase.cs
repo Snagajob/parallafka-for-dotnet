@@ -32,7 +32,7 @@ namespace Parallafka.Tests
         protected IEnumerable<IKafkaMessage<string, string>> GenerateTestMessages(int count, int startNum = 1, bool duplicateKeys = true)
         {
             return Enumerable.Range(startNum, count).Select(i => KafkaMessage.Create(
-                    key: $"k{(duplicateKeys && i % 9 == 0 ? i - 1 : i)}",
+                    key: $"k{(duplicateKeys && i % 15 == 0 ? i - 1 : i)}",
                     value: $"Message {i}",
                     offset: null));
         }
