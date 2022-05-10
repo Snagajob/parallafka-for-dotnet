@@ -190,7 +190,9 @@ namespace Parallafka.Tests.Rebalance
                 }
 
                 int[] partitionsRevoked = partitions.Select(ptn => ptn.Partition).ToArray();
+                Parallafka<string, string>.WriteLine("C1 before revoked: " + string.Join(",", partitionsAssignedToConsumer1));
                 partitionsAssignedToConsumer1.RemoveWhere(partitionsRevoked.Contains);
+                Parallafka<string, string>.WriteLine("C1 after revoked: " + string.Join(",", partitionsAssignedToConsumer1));
             });
 
             consumer1.AddPartitionsAssignedHandler(partitions =>
@@ -241,18 +243,18 @@ namespace Parallafka.Tests.Rebalance
 
             // Hang the next commit
             TaskCompletionSource consumer1CommitBlocker = new();
-            // bool committerAppearsToBeHanging = false;
-            // consumer1OnMessageCommittedAsync = msg =>
-            // {
-            //     committerAppearsToBeHanging = true;
-            //     return consumer1CommitBlocker.Task;
-            // };
-            // await Wait.UntilAsync("Committer appears to be hanging as expected",
-            //     async () =>
-            //     {
-            //         Assert.True(committerAppearsToBeHanging);
-            //     },
-            //     timeout: TimeSpan.FromSeconds(30));
+            bool committerAppearsToBeHanging = false;
+            consumer1OnMessageCommittedAsync = msg =>
+            {
+                committerAppearsToBeHanging = true;
+                return consumer1CommitBlocker.Task;
+            };
+            await Wait.UntilAsync("Committer appears to be hanging as expected",
+                async () =>
+                {
+                    Assert.True(committerAppearsToBeHanging);
+                },
+                timeout: TimeSpan.FromSeconds(30));
 
             // Hang consumer1's handler while we let consumer2 come online
             TaskCompletionSource consumer1HandlerHang = new();
@@ -293,7 +295,7 @@ namespace Parallafka.Tests.Rebalance
             // monitorConsumer1PartitionsBeingHandled = false;
 
             // // Unblock commits
-            //consumer1CommitBlocker.SetResult();
+            consumer1CommitBlocker.SetResult();
 
             await Wait.UntilAsync("Consumer2 has consumed some",
                 async () =>

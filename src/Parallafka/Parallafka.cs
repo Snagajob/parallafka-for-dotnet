@@ -124,8 +124,15 @@ namespace Parallafka
 
                 IReadOnlyCollection<TopicPartition> partitionsAssigned = null;
 
+                int assignmentNumber = 0;
+                int prevAssignmentNumber = 0;
+
+                HashSet<int> partitionsCurrentlyAssigned = new();
+
                 this._consumer.AddPartitionsAssignedHandler(partitions =>
                 {
+                    assignmentNumber++;
+
                     if (partitions.Count == 0)
                     {
                         Parallafka<string, string>.WriteLine("PartitionsAssigned is empty");
@@ -133,6 +140,10 @@ namespace Parallafka
                     }
                     Parallafka<string, string>.WriteLine($"Partitions assigned: " + string.Join(", ", partitions.Select(p => p.Partition)));
                     partitionsAssigned = partitions;
+                    foreach (var p in partitions)
+                    {
+                        partitionsCurrentlyAssigned.Add(p.Partition);
+                    }
                     // int nStaleRecordsRemoved = 0;
                     // int nBufferedOriginally = polledMessages.Count;
                     // while (polledMessages.TryReceive(m => !partitionsAssigned.Any(pa => m.Offset.Partition == pa.Partition), out var message))
@@ -167,6 +178,8 @@ namespace Parallafka
                     onPartitionsRevoked: (partitions, processor) =>
                     {
                         partitionsRevoked = partitions.Select(p => p.Partition);
+                        partitionsCurrentlyAssigned.RemoveWhere(partitionsRevoked.Contains);
+
                         partitionsAssignedBeforeRebalance = partitionsAssigned;
 
                         Parallafka<string, string>.WriteLine(
@@ -197,6 +210,7 @@ namespace Parallafka
                     break;
                 }
 
+                var assignmentNumberBeforeRebalance = assignmentNumber;
                 await messageSource.Completion;
                 Parallafka<string, string>.WriteLine("Pipeline has stopped due to rebalance. Will restart");
 
@@ -205,22 +219,39 @@ namespace Parallafka
                     throw new Exception("partitionsAssigned is null");
                 }
 
-                while (partitionsAssigned.Count > 0 && partitionsAssigned == partitionsAssignedBeforeRebalance) // TODO
+                // while (partitionsAssigned.Count > 0 && partitionsAssigned == partitionsAssignedBeforeRebalance) // TODO
+                // {
+                //     Parallafka<string, string>.WriteLine("Waiting for new assignment"); // and for purge
+                //     await Task.Delay(50);
+                // }
+
+                while (assignmentNumber == assignmentNumberBeforeRebalance) // TODO
                 {
                     Parallafka<string, string>.WriteLine("Waiting for new assignment"); // and for purge
                     await Task.Delay(50);
                 }
-                
                 //string oldPts = string.Join(", ", partitionsAssignedBeforeRebalance.Select(p => p.Partition));
                 //string newPts = string.Join(", ", partitionsAssigned.Select(p => p.Partition));
                 Parallafka<string, string>.WriteLine($"Done waiting for new assignment.");
 
                 uncommittedMessages = this._currentProcessor._commitState
                     .MessagesNotYetCommittedByPartition
-                    .Where(p => !partitionsRevoked.Contains(p.Key))
+                    .Where(p => partitionsCurrentlyAssigned.Contains(p.Key))
                     .SelectMany(p => p.Value);
+                // This unfortunately needs to go searching through the committer etc. for more uncommitted messages, since CommitState gives up ownership. TODO
                 
-                Parallafka<string, string>.WriteLine($"Uncommitted messages: " + uncommittedMessages.Count());
+                WriteLine($"Revoked partitions filtered out: " + string.Join(", ", partitionsRevoked));
+                WriteLine($"Current partitions: " + string.Join(", ", partitionsCurrentlyAssigned));
+                WriteLine($"Assigned partitions: " + string.Join(", ", partitionsAssigned));
+                WriteLine($"Uncommitted messages: " + uncommittedMessages.Count());
+
+                foreach (var um in uncommittedMessages)
+                {
+                    WriteLine($"ready to commit {um.Key}? " + um.ReadyToCommit);
+                }
+
+                // test thinks C1 should have 9,7,5,3,1. It received msg in P6 after rebalance.
+                // 0,1,2,3,4 were revoked
                 
 
                 // await this._pollerLock.WaitAsync();
