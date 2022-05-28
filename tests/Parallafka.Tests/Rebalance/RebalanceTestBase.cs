@@ -94,7 +94,8 @@ namespace Parallafka.Tests.Rebalance
         owns the partition. Maybe we override the normal rebalance callback logic to simulate receiving the errors without
         receiving the callbacks. The point is to show that the errors trigger the same resolution as the graceful-rebalance callbacks.
         We also want to demonstrate that the errors can be received and handled in tandem with the callbacks.
-        Trigger the errors, then the callbacks, and assert that the completion & order outcome is correct.
+        Trigger the errors, then the callbacks, and then the callbacks before the erorrs,
+        and assert that the completion & order outcome is correct.
 
 
         For all of these tests, have a version where the rebalance logic is disabled, and assert that their assertions fail.
@@ -182,17 +183,17 @@ namespace Parallafka.Tests.Rebalance
             // Register this after the "real" handler registered by Parallafka.ConsumeAsync
             consumer1.AddPartitionsRevokedHandler(partitions =>
             {
+                int[] partitionsRevoked = partitions.Select(ptn => ptn.Partition).ToArray();
+                Parallafka<string, string>.WriteLine("C1 before revoked: " + string.Join(",", partitionsAssignedToConsumer1));
+                partitionsAssignedToConsumer1.RemoveWhere(partitionsRevoked.Contains);
+                Parallafka<string, string>.WriteLine("C1 after revoked: " + string.Join(",", partitionsAssignedToConsumer1));
+
                 if (isConsumer2Started)
                 {
                     Parallafka<string, string>.WriteLine("THE REBALANCE HAS STARTED");
                     hasConsumer1Rebalanced = true;
                     //partitionsRevokedFromConsumer1 = partitions;
                 }
-
-                int[] partitionsRevoked = partitions.Select(ptn => ptn.Partition).ToArray();
-                Parallafka<string, string>.WriteLine("C1 before revoked: " + string.Join(",", partitionsAssignedToConsumer1));
-                partitionsAssignedToConsumer1.RemoveWhere(partitionsRevoked.Contains);
-                Parallafka<string, string>.WriteLine("C1 after revoked: " + string.Join(",", partitionsAssignedToConsumer1));
             });
 
             consumer1.AddPartitionsAssignedHandler(partitions =>
@@ -294,7 +295,7 @@ namespace Parallafka.Tests.Rebalance
             // partitionHandlerThreadPause.SetResult();
             // monitorConsumer1PartitionsBeingHandled = false;
 
-            // // Unblock commits
+            // Unblock commits
             consumer1CommitBlocker.SetResult();
 
             await Wait.UntilAsync("Consumer2 has consumed some",

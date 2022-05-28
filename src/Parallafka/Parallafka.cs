@@ -86,6 +86,40 @@ namespace Parallafka
                 });
             Task pollerThread = this.KafkaPollerThread(routingTarget: polledMessages, stopToken: userStopToken);
 
+            //IReadOnlyCollection<TopicPartition> partitionsAssigned = null;
+            HashSet<int> partitionsCurrentlyAssigned = new();
+            int assignmentNumber = 0;
+            int prevAssignmentNumber = 0;
+
+
+            this._consumer.AddPartitionsAssignedHandler(partitions => // TODO: Verify this is called when polling starts
+            {
+                assignmentNumber++;
+
+                if (partitions.Count == 0)
+                {
+                    Parallafka<string, string>.WriteLine("PartitionsAssigned is empty");
+                    //return; // twas this
+                }
+                Parallafka<string, string>.WriteLine($"Partitions assigned: " + string.Join(", ", partitions.Select(p => p.Partition)));
+                //partitionsAssigned = partitions;
+                foreach (var p in partitions)
+                {
+                    partitionsCurrentlyAssigned.Add(p.Partition);
+                }
+                // int nStaleRecordsRemoved = 0;
+                // int nBufferedOriginally = polledMessages.Count;
+                // while (polledMessages.TryReceive(m => !partitionsAssigned.Any(pa => m.Offset.Partition == pa.Partition), out var message))
+                // {
+                //     Parallafka<string, string>.WriteLine("A revoked partition message was buffered. Removed it.");
+                //     nStaleRecordsRemoved++;
+                // }
+                // Parallafka<string, string>.WriteLine($"Removed {nStaleRecordsRemoved} stale records out of {nBufferedOriginally} buffered");
+            });
+
+            Action<IReadOnlyCollection<TopicPartition>> onPartitionsRevoked = _ => {};
+            this._consumer.AddPartitionsRevokedHandler(onPartitionsRevoked);
+
             while (!userStopToken.IsCancellationRequested)
             {
                 CancellationTokenSource pipelineStop = new();
@@ -113,6 +147,7 @@ namespace Parallafka
                 // Is this a difficult RC opportunity? Where do we put the unfinished messages in the pipeline
                 // WRT those in the source?
                 // Can the consumer freak out and reset?
+                // I think it's fine: It would just replay.
 
                 // ***********
                 // Any issues with the offsets? What if it resets and poller resets - what does the ordered to-commit queue look like?
@@ -122,41 +157,7 @@ namespace Parallafka
                 // Like what if they're added back.
                 // We could pause the poller or something and purge...
 
-                IReadOnlyCollection<TopicPartition> partitionsAssigned = null;
-
-                int assignmentNumber = 0;
-                int prevAssignmentNumber = 0;
-
-                HashSet<int> partitionsCurrentlyAssigned = new();
-
-                this._consumer.AddPartitionsAssignedHandler(partitions =>
-                {
-                    assignmentNumber++;
-
-                    if (partitions.Count == 0)
-                    {
-                        Parallafka<string, string>.WriteLine("PartitionsAssigned is empty");
-                        //return; // twas this
-                    }
-                    Parallafka<string, string>.WriteLine($"Partitions assigned: " + string.Join(", ", partitions.Select(p => p.Partition)));
-                    partitionsAssigned = partitions;
-                    foreach (var p in partitions)
-                    {
-                        partitionsCurrentlyAssigned.Add(p.Partition);
-                    }
-                    // int nStaleRecordsRemoved = 0;
-                    // int nBufferedOriginally = polledMessages.Count;
-                    // while (polledMessages.TryReceive(m => !partitionsAssigned.Any(pa => m.Offset.Partition == pa.Partition), out var message))
-                    // {
-                    //     Parallafka<string, string>.WriteLine("A revoked partition message was buffered. Removed it.");
-                    //     nStaleRecordsRemoved++;
-                    // }
-                    // Parallafka<string, string>.WriteLine($"Removed {nStaleRecordsRemoved} stale records out of {nBufferedOriginally} buffered");
-                });
-
-                // TODO: don't double-register the revokedHandler.
-
-                var partitionsAssignedBeforeRebalance = partitionsAssigned;
+                //var partitionsAssignedBeforeRebalance = partitionsAssigned;
 
                 IEnumerable<int> partitionsRevoked = Enumerable.Empty<int>();
 
@@ -175,27 +176,28 @@ namespace Parallafka
                         // }
                         await messageHandlerAsync(m);
                     },
-                    onPartitionsRevoked: (partitions, processor) =>
-                    {
-                        partitionsRevoked = partitions.Select(p => p.Partition);
-                        partitionsCurrentlyAssigned.RemoveWhere(partitionsRevoked.Contains);
-
-                        partitionsAssignedBeforeRebalance = partitionsAssigned;
-
-                        Parallafka<string, string>.WriteLine(
-                            this._consumer.ToString() + "REVOKING PARTITIONS yo !!! " + string.Join(", ", partitions.Select(p => p.Partition)));
-
-                        Parallafka<string, string>.WriteLine("messages buffered from poller: " + polledMessages.Count);
-
-                        processor.InitiateShutdown(delayToFinishUpBeforeHardStop: TimeSpan.FromSeconds(10)); // catch it here, see what happens in processor
-
-                        Parallafka<string, string>.WriteLine("Waiting for processor to shut down");
-                        processor.Completion.Wait();
-                        Parallafka<string, string>.WriteLine("Done waiting for processor to shut down");
-                    },
                     onMessageCommitted: this.OnMessageCommitted,
                     logger: this._logger,
                     onCommitQueueFull: () => { /* TODO: remove */});
+
+                onPartitionsRevoked = partitions =>
+                {
+                    partitionsRevoked = partitions.Select(p => p.Partition);
+                    partitionsCurrentlyAssigned.RemoveWhere(partitionsRevoked.Contains);
+
+                    //partitionsAssignedBeforeRebalance = partitionsAssigned;
+
+                    Parallafka<string, string>.WriteLine(
+                        this._consumer.ToString() + "REVOKING PARTITIONS yo !!! " + string.Join(", ", partitions.Select(p => p.Partition)));
+
+                    Parallafka<string, string>.WriteLine("messages buffered from poller: " + polledMessages.Count);
+
+                    this._currentProcessor.InitiateShutdown(delayToFinishUpBeforeHardStop: TimeSpan.FromSeconds(10)); // catch it here, see what happens in processor
+
+                    Parallafka<string, string>.WriteLine("Waiting for processor to shut down");
+                    this._currentProcessor.Completion.Wait();
+                    Parallafka<string, string>.WriteLine("Done waiting for processor to shut down");
+                };
 
                 this._getStats = () => new
                 {
@@ -214,10 +216,10 @@ namespace Parallafka
                 await messageSource.Completion;
                 Parallafka<string, string>.WriteLine("Pipeline has stopped due to rebalance. Will restart");
 
-                if (partitionsAssigned == null)
-                {
-                    throw new Exception("partitionsAssigned is null");
-                }
+                // if (partitionsAssigned == null)
+                // {
+                //     throw new Exception("partitionsAssigned is null");
+                // }
 
                 // while (partitionsAssigned.Count > 0 && partitionsAssigned == partitionsAssignedBeforeRebalance) // TODO
                 // {
@@ -242,7 +244,7 @@ namespace Parallafka
                 
                 WriteLine($"Revoked partitions filtered out: " + string.Join(", ", partitionsRevoked));
                 WriteLine($"Current partitions: " + string.Join(", ", partitionsCurrentlyAssigned));
-                WriteLine($"Assigned partitions: " + string.Join(", ", partitionsAssigned));
+                //WriteLine($"Assigned partitions: " + string.Join(", ", partitionsAssigned));
                 WriteLine($"Uncommitted messages: " + uncommittedMessages.Count());
 
                 foreach (var um in uncommittedMessages)
@@ -329,7 +331,7 @@ namespace Parallafka
                 IKafkaConsumer<TKey, TValue> consumer,
                 ISource<KafkaMessageWrapped<TKey, TValue>> messageSource,
                 Func<IKafkaMessage<TKey, TValue>, Task> messageHandlerAsync,
-                Action<IReadOnlyCollection<TopicPartition>, Pipeline> onPartitionsRevoked,
+                //Action<IReadOnlyCollection<TopicPartition>, Pipeline> onPartitionsRevoked,
                 Func<KafkaMessageWrapped<TKey, TValue>, Task> onMessageCommitted,
                 ILogger logger,
                 Action onCommitQueueFull = null)
@@ -338,7 +340,7 @@ namespace Parallafka
                 this._consumer = consumer;
                 this._messageSource = messageSource; // TODO: Need to salvage what's in the "salvaged" part of this on restart.
                 this._messageHandlerAsync = messageHandlerAsync;
-                this._onPartitionsRevoked = onPartitionsRevoked;
+                //this._onPartitionsRevoked = onPartitionsRevoked;
                 this._onMessageCommitted = onMessageCommitted;
                 this._logger = logger;
                 this._onCommitQueueFull = onCommitQueueFull;
@@ -371,7 +373,7 @@ namespace Parallafka
 
                 var messagesByKey = this._messagesByKey = new MessagesByKey<TKey, TValue>(hardStopper.Token);
 
-                // the message router ensures messages are handled by key in order
+                // The message router ensures messages are handled by key in order
                 var router = new MessageRouter<TKey, TValue>(commitState, messagesByKey, hardStopper.Token);
                 var routingTarget = new ActionBlock<KafkaMessageWrapped<TKey, TValue>>(router.RouteMessage,
                     new ExecutionDataflowBlockOptions
@@ -413,7 +415,7 @@ namespace Parallafka
                 router.MessagesToHandle.LinkTo(handlerTarget);
                 finishedRouter.MessagesToHandle.LinkTo(handlerTarget);
 
-                // handled messages are sent to both:
+                // Handled messages are sent to both:
                 // . the finished router (send the next message for the key)
                 // . the committer
                 var messageHandledTarget = new ActionBlock<KafkaMessageWrapped<TKey, TValue>>(
@@ -429,10 +431,12 @@ namespace Parallafka
 
                 handler.MessageHandled.LinkTo(messageHandledTarget);
 
-                this._consumer.AddPartitionsRevokedHandler(partitions =>
-                {
-                    this._onPartitionsRevoked(partitions, this);
-                });
+                // this._consumer.AddPartitionsRevokedHandler(partitions => // TODO: register once and then change the impl.
+                // {
+                //     this._onPartitionsRevoked(partitions, this);
+                // });
+
+                // onPartitionsRevoked = this._onPartitionsRevoked;
 
                 this._messageSource.Block.LinkTo(routingTarget);
 
