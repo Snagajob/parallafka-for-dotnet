@@ -100,6 +100,8 @@ namespace Parallafka.Tests.Rebalance
 
         For all of these tests, have a version where the rebalance logic is disabled, and assert that their assertions fail.
 
+        Test cooperative rebalancing and default.
+
         */
 
         public virtual async Task TestRebalanceAsync()
@@ -128,7 +130,6 @@ namespace Parallafka.Tests.Rebalance
 
             bool hasConsumer1Rebalanced = false;
             bool isConsumer2Started = false;
-            //IReadOnlyCollection<TopicPartition> partitionsRevokedFromConsumer1 = null;
 
             await using KafkaConsumerSpy<string, string> consumer1 = await this.Topic.GetConsumerAsync(consumerGroupId);
 
@@ -145,6 +146,8 @@ namespace Parallafka.Tests.Rebalance
             TaskCompletionSource partitionHandlerThreadPause1 = new();
             TaskCompletionSource partitionHandlerThreadPause2 = new();
             Func<int, Task> onConsumer1HandlerThreadWonPartitionAsync = _ => Task.CompletedTask;
+
+            SemaphoreSlim rebalanceLock = new(1);
 
             Task consumeTask1 = parallafka1.ConsumeAsync(async msg =>
                 {
@@ -163,10 +166,18 @@ namespace Parallafka.Tests.Rebalance
                     
                     messagesConsumedOverall.Enqueue(msg);
                     consumer1MessagesConsumed.Enqueue(msg);
+
+                    await rebalanceLock.WaitAsync();
                     if (hasConsumer1Rebalanced) // TODO: thread safety
                     {
                         consumer1MessagesConsumedAfterRebalance.Enqueue(msg);
+                        if (!partitionsAssignedToConsumer1.Contains(msg.Offset.Partition))
+                        {
+                            throw new Exception($"BOOM {msg.Offset.Partition} not assigned to c1"); // todo remove
+                        }
                     }
+                    rebalanceLock.Release();
+
                     await onConsumer1ConsumedAsync();
                     await Task.Delay(consumer1HandleDelay);
 
@@ -183,6 +194,7 @@ namespace Parallafka.Tests.Rebalance
             // Register this after the "real" handler registered by Parallafka.ConsumeAsync
             consumer1.AddPartitionsRevokedHandler(partitions =>
             {
+                rebalanceLock.Wait();
                 int[] partitionsRevoked = partitions.Select(ptn => ptn.Partition).ToArray();
                 Parallafka<string, string>.WriteLine("C1 before revoked: " + string.Join(",", partitionsAssignedToConsumer1));
                 partitionsAssignedToConsumer1.RemoveWhere(partitionsRevoked.Contains);
@@ -192,17 +204,19 @@ namespace Parallafka.Tests.Rebalance
                 {
                     Parallafka<string, string>.WriteLine("THE REBALANCE HAS STARTED");
                     hasConsumer1Rebalanced = true;
-                    //partitionsRevokedFromConsumer1 = partitions;
                 }
+                rebalanceLock.Release();
             });
 
             consumer1.AddPartitionsAssignedHandler(partitions =>
             {
-                Parallafka<string, string>.WriteLine(consumer1.ToString() + "ASSIGNING PARTITIONS !!! " + string.Join(", ", partitions.Select(p => p.Partition)));
+                rebalanceLock.Wait();
+                Parallafka<string, string>.WriteLine(consumer1.ToString() + "C1 ASSIGNING PARTITIONS !!! " + string.Join(", ", partitions.Select(p => p.Partition)));
                 foreach (var partition in partitions.Select(p => p.Partition))
                 {
                     partitionsAssignedToConsumer1.Add(partition);
                 }
+                rebalanceLock.Release();
             });
 
             await Wait.UntilAsync("Consumer1 has consumed some",
@@ -305,19 +319,30 @@ namespace Parallafka.Tests.Rebalance
                 },
                 timeout: TimeSpan.FromSeconds(30));
 
-            IReadOnlyCollection<IKafkaMessage<string, string>> messagesPublished =  await publishTask;
+            IReadOnlyCollection<IKafkaMessage<string, string>> messagesPublished = await publishTask;
             ConsumptionVerifier verifier = new();
             verifier.AddSentMessages(messagesPublished);
 
             consumer1HandleDelay = TimeSpan.Zero;
+            
             await Wait.UntilAsync("Consumed all messages",
                 async () =>
                 {
-                    Assert.True(messagesConsumedOverall.Count >= messagesPublished.Count);
+                    HashSet<string> messageIdsConsumedOverall = new(messagesConsumedOverall.Select(ConsumptionVerifier.UniqueIdFor));
+                    foreach (var msg in messagesPublished)
+                    {
+                        string id = ConsumptionVerifier.UniqueIdFor(msg);
+                        Assert.True(messageIdsConsumedOverall.Contains(id));
+                    }
+                    // This is wrong. Dupes. It was still consuming...
+                    //Assert.True(messagesConsumedOverall.Count >= messagesPublished.Count);
                 },
                 timeout: TimeSpan.FromSeconds(45));
 
-            foreach (var message in consumer1MessagesConsumedAfterRebalance)
+            // TODO: Enhance this to map messages consumed in each "balance" era, storing valid assigned partitions with all the messages handled.
+            this.Console.WriteLine("there are " + consumer1MessagesConsumedAfterRebalance.Count);
+            //Assert.Equal(0, consumer1MessagesConsumedAfterRebalance.Count(m => !partitionsAssignedToConsumer1.Contains(m.Offset.Partition)));
+            foreach (var message in consumer1MessagesConsumedAfterRebalance) 
             {
                 Assert.Contains(message.Offset.Partition, partitionsAssignedToConsumer1);
             }

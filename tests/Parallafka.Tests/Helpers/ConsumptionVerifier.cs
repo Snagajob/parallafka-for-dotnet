@@ -19,7 +19,7 @@ namespace Parallafka.Tests.Helpers
 
         private int _consumedMessageCount = 0;
 
-        private static string UniqueIdFor(IKafkaMessage<string, string> message)
+        public static string UniqueIdFor(IKafkaMessage<string, string> message)
         {
             // TODO: Override equals
             return $"{message.Key}-[ :) ]-{message.Value}";

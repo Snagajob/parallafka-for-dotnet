@@ -89,8 +89,6 @@ namespace Parallafka
             //IReadOnlyCollection<TopicPartition> partitionsAssigned = null;
             HashSet<int> partitionsCurrentlyAssigned = new();
             int assignmentNumber = 0;
-            int prevAssignmentNumber = 0;
-
 
             this._consumer.AddPartitionsAssignedHandler(partitions => // TODO: Verify this is called when polling starts
             {
@@ -118,7 +116,7 @@ namespace Parallafka
             });
 
             Action<IReadOnlyCollection<TopicPartition>> onPartitionsRevoked = _ => {};
-            this._consumer.AddPartitionsRevokedHandler(onPartitionsRevoked);
+            //this._consumer.AddPartitionsRevokedHandler(onPartitionsRevoked);
 
             while (!userStopToken.IsCancellationRequested)
             {
@@ -198,6 +196,12 @@ namespace Parallafka
                     this._currentProcessor.Completion.Wait();
                     Parallafka<string, string>.WriteLine("Done waiting for processor to shut down");
                 };
+                this._consumer.AddPartitionsRevokedHandler(onPartitionsRevoked);
+                // this was originally not being set to the above, but a NoOp func.
+                // It was not shutting down the processor!
+                // Now there's a new error:     86 not >= previous message offset 87
+                // I think I had already realized the need to make the order checker more lenient
+                // to check for eventual consistency instead so maybe the test is effectively passing at this point.
 
                 this._getStats = () => new
                 {
@@ -477,19 +481,19 @@ namespace Parallafka
                 state = "Shutdown: Awaiting message routing";
                 WriteLine(state);
                 routingTarget.Complete();
-                //await routingTarget.Completion;
+                await routingTarget.Completion;
 
                 // wait for the router to finish (it should already be done)
                 state = "Shutdown: Awaiting message handler";
                 WriteLine(state);
                 router.MessagesToHandle.Complete();
-                //await router.MessagesToHandle.Completion;
+                await router.MessagesToHandle.Completion;
 
                 // wait for the finishedRoute to complete handling all the queued messages
                 finishedRouter.Complete();
                 state = "Shutdown: Awaiting message routing completion";
                 WriteLine(state);
-                //await finishedRouter.Completion;
+                await finishedRouter.Completion;
                 // Maybe await this later, after its targets are done, and after salvaging anything within
                 // to feed back in to the new pipeline.
 
@@ -502,37 +506,37 @@ namespace Parallafka
                 state = "Shutdown: Awaiting handler shutdown";
                 WriteLine(state);
                 handlerTarget.Complete();
-                //await handlerTarget.Completion;
+                await handlerTarget.Completion;
 
                 state = "Shutdown: Awaiting handled shutdown";
                 WriteLine(state);
                 handler.MessageHandled.Complete();
-                //await handler.MessageHandled.Completion;
+                await handler.MessageHandled.Completion;
 
                 state = "Shutdown: Awaiting handled target shutdown";
                 WriteLine(state);
                 messageHandledTarget.Complete();
-                //await messageHandledTarget.Completion;
+                await messageHandledTarget.Completion;
 
                 // wait for the committer to finish
                 state = "Shutdown: Awaiting message commit poller";
                 WriteLine(state);
                 commitPoller.Complete();
-                //await commitPoller.Completion;
+                await commitPoller.Completion;
 
                 this._getStats = null;
 
-                await Task.WhenAny(
-                    Task.Delay(7000),
-                    Task.WhenAll(
-                        routingTarget.Completion,
-                        router.MessagesToHandle.Completion,
-                        finishedRouter.Completion,
-                        handlerTarget.Completion,
-                        handler.MessageHandled.Completion,
-                        messageHandledTarget.Completion,
-                        commitPoller.Completion
-                    ));
+                // await Task.WhenAny(
+                //     Task.Delay(7000),
+                //     Task.WhenAll(
+                //         routingTarget.Completion,
+                //         router.MessagesToHandle.Completion,
+                //         finishedRouter.Completion,
+                //         handlerTarget.Completion,
+                //         handler.MessageHandled.Completion,
+                //         messageHandledTarget.Completion,
+                //         commitPoller.Completion
+                //     ));
 
                 // commitState should be empty
                 WriteLine("Pipeline finished");
