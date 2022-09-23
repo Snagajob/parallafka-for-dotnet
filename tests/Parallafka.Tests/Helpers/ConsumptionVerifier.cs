@@ -72,21 +72,40 @@ namespace Parallafka.Tests.Helpers
 
         public void AssertConsumedAllSentMessagesProperly()
         {
-            //Assert.Equal(this._sentMessages.Count, this._consumedMessageUniqueIds.Count);
+            Assert.Equal(this._sentMessages.Count, this._consumedMessageUniqueIds.Count);
+
+            foreach (var sentMessage in this._sentMessages)
+            {
+                Assert.True(this._consumedMessageUniqueIds.Contains(UniqueIdFor(sentMessage)));
+            }
 
             foreach (var kvp in this._consumedMessagesByKey)
             {
                 long prevMsgOffset = -1;
-                foreach (IKafkaMessage<string, string> message in kvp.Value)
+                List<IKafkaMessage<string, string>> messagesInConsumeOrderForThisKey = new(kvp.Value);
+                for (int i = 0; i < messagesInConsumeOrderForThisKey.Count; i++)
                 {
+                    IKafkaMessage<string, string> message = messagesInConsumeOrderForThisKey[i];
+
                     Assert.Equal(kvp.Key, message.Key);
                     
                     long offset = message.Offset.Offset;
-                    Assert.True(offset >= prevMsgOffset, $"{offset} not >= previous message offset {prevMsgOffset}"); // TODO: HOW DID THIS FAIL in order guarantee test
+
+                    if (offset < prevMsgOffset)
+                    {
+                        // This is normally a bad sign, but let's see if this is the valid edge case.
+                        // It's okay if we handle offset 94 after 95 so long as we handle 95 again.
+                        // This can happen especially during consumer rebalances when handled messages are not committed before shutdown.
+                        bool nextMessageOffsetIsPrevMsgOffset = i + 1 < messagesInConsumeOrderForThisKey.Count &&
+                            messagesInConsumeOrderForThisKey[i + 1].Offset.Offset == prevMsgOffset;
+                        bool isValidOutOfOrderEdgeCase = offset == prevMsgOffset - 1 && nextMessageOffsetIsPrevMsgOffset;
+                        if (!isValidOutOfOrderEdgeCase)
+                        {
+                            Assert.True(offset >= prevMsgOffset, $"{offset} not >= previous message offset {prevMsgOffset}");
+                        }
+                    }
 
                     prevMsgOffset = offset;
-
-                    Assert.True(this._sentMessageUniqueIds.Contains(UniqueIdFor(message)), "Expecting to find message in list of sent messages");
                 }
             }
         }
