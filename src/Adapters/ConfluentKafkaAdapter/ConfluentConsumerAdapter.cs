@@ -34,7 +34,6 @@ namespace Parallafka.Adapters.ConfluentKafka
             this._topic = topic;
             this._addPartitionsRevokedHandler = addPartitionsRevokedHandler;
             this._addPartitionsAssignedHandler = addPartitionsAssignedHandler;
-
         }
 
         public async Task CommitAsync(IKafkaMessage<TKey, TValue> message, CancellationToken cancelToken)

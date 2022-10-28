@@ -99,6 +99,8 @@ namespace Parallafka.Tests.Helpers
                         bool nextMessageOffsetIsPrevMsgOffset = i + 1 < messagesInConsumeOrderForThisKey.Count &&
                             messagesInConsumeOrderForThisKey[i + 1].Offset.Offset == prevMsgOffset;
                         bool isValidOutOfOrderEdgeCase = offset == prevMsgOffset - 1 && nextMessageOffsetIsPrevMsgOffset;
+                        // I think this needs to expand to handle eventually consistent processing like this:
+                        // . . . 32, 33, 34 [commit], 35, 36, [rebalance to new consumer] 34, 35, 36, 37 . . .
                         if (!isValidOutOfOrderEdgeCase)
                         {
                             Assert.True(offset >= prevMsgOffset, $"{offset} not >= previous message offset {prevMsgOffset}");

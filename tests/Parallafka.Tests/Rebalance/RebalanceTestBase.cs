@@ -259,9 +259,11 @@ namespace Parallafka.Tests.Rebalance
             // Hang the next commit
             TaskCompletionSource consumer1CommitBlocker = new();
             bool committerAppearsToBeHanging = false;
+            int consumer1MessagesConsumedCountBeforeCommitterHang = -1;
             consumer1OnMessageCommittedAsync = msg =>
             {
                 committerAppearsToBeHanging = true;
+                consumer1MessagesConsumedCountBeforeCommitterHang = consumer1MessagesConsumed.Count;
                 return consumer1CommitBlocker.Task;
             };
             await Wait.UntilAsync("Committer appears to be hanging as expected",
@@ -270,13 +272,17 @@ namespace Parallafka.Tests.Rebalance
                     Assert.True(committerAppearsToBeHanging);
                 },
                 timeout: TimeSpan.FromSeconds(30));
+            await Wait.UntilAsync("Consumer1 handled some messages with committer stuck",
+                async () =>
+                {
+                    Assert.True(consumer1MessagesConsumed.Count - consumer1MessagesConsumedCountBeforeCommitterHang > 50);
+                },
+                timeout: TimeSpan.FromSeconds(30));
 
             // Hang consumer1's handler while we let consumer2 come online
             TaskCompletionSource consumer1HandlerHang = new();
             onConsumer1ConsumedAsync = () => consumer1HandlerHang.Task;
             //Assert.True(consumer1MessagesConsumed.Count < 500, $"Consumer1 has already consumed {consumer1MessagesConsumed.Count}");
-
-
 
             await using KafkaConsumerSpy<string, string> consumer2 = await this.Topic.GetConsumerAsync(consumerGroupId);
             isConsumer2Started = true;
