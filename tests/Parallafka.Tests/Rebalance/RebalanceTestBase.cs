@@ -93,7 +93,7 @@ namespace Parallafka.Tests.Rebalance
         Somehow we need to cause or simulate the errors we get on commit calls when the consumer no longer
         owns the partition. Maybe we override the normal rebalance callback logic to simulate receiving the errors without
         receiving the callbacks. The point is to show that the errors trigger the same resolution as the graceful-rebalance callbacks.
-        We also want to demonstrate that the errors can be received and handled in tandem with the callbacks.
+            We also want to demonstrate that the errors can be received and handled in tandem with the callbacks.
         Trigger the errors, then the callbacks, and then the callbacks before the erorrs,
         and assert that the completion & order outcome is correct.
 
@@ -256,7 +256,16 @@ namespace Parallafka.Tests.Rebalance
             partitionHandlerThreadPause2.SetResult();
             monitorConsumer1PartitionsBeingHandled = false;
 
-            // Hang the next commit
+            // When do we hang the committer? If before rebalance, then it's not dequeueing anything while hung, and if the rebalance proceeds
+            // and reads MessagesToCommitByPartition into the salvaged queue, it has read everything.
+
+            // But in reality, the committer might hang and then proceed randomly and pull a message off from the salvage queue
+            // only to have it fail in its commit. So it will not be salvaged and upon pipeline restart it will skip ahead in commits and
+            // drop the message from reprocessing. How do we simulate this for the test?
+
+            // During rebalance, before accessing the salvaged messages, the committer needs to pull messages off the queue - and fail to commit.
+
+            // Hang the next commit. This will allow same-key messages to accumulate in the messagesToCommit queues.
             TaskCompletionSource consumer1CommitBlocker = new();
             bool committerAppearsToBeHanging = false;
             int consumer1MessagesConsumedCountBeforeCommitterHang = -1;
@@ -278,6 +287,9 @@ namespace Parallafka.Tests.Rebalance
                     Assert.True(consumer1MessagesConsumed.Count - consumer1MessagesConsumedCountBeforeCommitterHang > 50);
                 },
                 timeout: TimeSpan.FromSeconds(30));
+
+            // TODO: what about populating the MessagesByKey? Verify it's populated and that all the messages are
+            // salvaged after restart.
 
             // Hang consumer1's handler while we let consumer2 come online
             TaskCompletionSource consumer1HandlerHang = new();
@@ -317,6 +329,8 @@ namespace Parallafka.Tests.Rebalance
 
             // Unblock commits
             consumer1CommitBlocker.SetResult();
+            // TODO: Shouldn't this result in commit errors? Verify
+            // Or has it already been recreated along with whole pipeline?
 
             await Wait.UntilAsync("Consumer2 has consumed some",
                 async () =>

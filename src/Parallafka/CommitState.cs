@@ -27,7 +27,6 @@ namespace Parallafka
         private readonly SemaphoreSlim _canQueueMessage;
         private readonly CancellationToken _stopToken;
 
-        private int mmq = -1;
 
         /// <summary>
         /// Creates a new instance of CommitState
@@ -38,7 +37,6 @@ namespace Parallafka
         {
             this._canQueueMessage = new(maxMessagesQueued);
 
-            mmq = maxMessagesQueued;
             this._stopToken = stopToken;
             this._messagesNotYetCommittedByPartition = new();
             this._messagesNotYetCommittedByPartitionReaderWriterLock = new();
@@ -82,6 +80,9 @@ namespace Parallafka
         {
             KafkaMessageWrapped<TKey, TValue> messageToCommit = null;
             
+            // TODO: Is this a bug? If TryDequeue is false, we already released++.
+            // Or can it ever return false here? Why is this a ConcurrentQueue?
+            // Only to allow writes to the tail while reading the head?
             var released = 0;
             while (messagesInPartition.TryPeek(out KafkaMessageWrapped<TKey, TValue> msg) && msg.ReadyToCommit)
             {

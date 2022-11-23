@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -23,6 +25,11 @@ namespace Parallafka
         private long _messagesCommitLoops;
 
         private Func<KafkaMessageWrapped<TKey, TValue>, Task> _onCommitAsync;
+
+        //private ConcurrentDictionary<int, KafkaMessageWrapped<TKey, TValue>> _messagesBeingCommittedByPartition;
+
+        public KafkaMessageWrapped<TKey, TValue> MessageBeingCommitted { get; private set; }
+
 
         public MessageCommitter(
             IKafkaConsumer<TKey, TValue> consumer,
@@ -60,7 +67,9 @@ namespace Parallafka
                 Parallafka<TKey, TValue>.WriteLine($"GetAndCommitAnyMessages start call#{loop}");
                 foreach (var message in this._commitState.GetMessagesToCommit())
                 {
+                    this.MessageBeingCommitted = message;
                     await CommitMessage(message, cancellationToken);
+                    this.MessageBeingCommitted = null;
                 }
 
                 Parallafka<TKey, TValue>.WriteLine($"GetAndCommitAnyMessages finish call#{loop}");
@@ -80,6 +89,9 @@ namespace Parallafka
                     Parallafka<TKey, TValue>.WriteLine($"MsgCommitter: committing {messageToCommit.Offset}");
                     cancellationToken.ThrowIfCancellationRequested();
                     await this._consumer.CommitAsync(messageToCommit.Message, cancellationToken);
+                    // Let's see.. so we're holding the messageToCommit, pulled OFF the toCommit queue.
+                    // And the cancelToken is cancelled, and we drop the message.
+                    // Maybe we can add an UncommittedMessages property for this edge case.. ugh
                     if (this._onCommitAsync != null)
                     {
                         await Task.WhenAny(this._onCommitAsync.Invoke(messageToCommit), Task.Delay(-1, cancellationToken));
